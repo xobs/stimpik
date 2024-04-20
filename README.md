@@ -7,6 +7,7 @@ This attack uses a Raspberry Pi Pico.
 ## Building
 
 ```
+git submodule update --init
 cmake -B build -DPICO_SDK_PATH=path-to-pico-sdk
 make -C build
 ```

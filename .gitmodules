@@ -1,0 +1,3 @@
+[submodule "blackmagic"]
+	path = blackmagic/blackmagic
+	url = https://github.com/blackmagic-debug/blackmagic.git

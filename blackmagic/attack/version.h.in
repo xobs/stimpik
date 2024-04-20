@@ -1,0 +1,9 @@
+#ifndef BMP_VERSION_H_
+#define BMP_VERSION_H_
+
+#define FIRMWARE_VERSION "@_farpatch_build_version@"
+#define FARPATCH_VERSION FIRMWARE_VERSION
+#define BMP_VERSION      "@_bmp_version@"
+#define BUILD_TIMESTAMP  "@_time_stamp@"
+
+#endif /* BMP_VERSION_H_ */
