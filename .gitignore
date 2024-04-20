@@ -1,2 +1,2 @@
 build/
-blackmagic/attack/version.h
+blackmagic/attack/include/version.h

@@ -31,6 +31,8 @@
 #include <hardware/uart.h>
 #include <hardware/pwm.h>
 
+int bmp_loader(void);
+
 // Exact steps for attack:
 //  Power pins high
 //  Wait for serial input
@@ -137,6 +139,7 @@ int main()
 
 	// Wait for any serial input to start the attack
 	int i = 0;
+	bmp_loader();
 	while (getchar_timeout_us(500 * 1000) == PICO_ERROR_TIMEOUT) {
 		printf("%d: Load firmware via JTAG. Press any key to start the attack...\r\n", i += 1);
 		tight_loop_contents();

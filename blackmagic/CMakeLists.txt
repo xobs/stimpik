@@ -24,14 +24,18 @@ else()
     message(STATUS "GIT not found")
 endif()
 string(TIMESTAMP _time_stamp)
-configure_file(${CMAKE_SOURCE_DIR}/blackmagic/attack/version.h.in ${CMAKE_SOURCE_DIR}/blackmagic/attack/version.h @ONLY)
+configure_file(
+    ${CMAKE_SOURCE_DIR}/blackmagic/attack/include/version.h.in
+    ${CMAKE_SOURCE_DIR}/blackmagic/attack/include/version.h
+    @ONLY
+)
 
 # Include all C files in the specified directories
 file(GLOB SOURCES
     "blackmagic/src/target/*.c"
     "blackmagic/src/*.c"
     "blackmagic/src/platforms/common/*.c"
-    "./*.c"
+    "attack/src/*.c"
 )
 
 # Exclude certain files
@@ -45,8 +49,15 @@ list(REMOVE_ITEM SOURCES
     "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/platforms/common/usb.c"
     "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/jtagtap_generic.c"
     "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/swdptap_generic.c"
-    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/exception.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/semihosting.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/spi.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/renesas_rz.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/rp.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/imxrt.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/target/lpc43xx.c"
     "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/main.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/gdb_main.c"
+    "${CMAKE_SOURCE_DIR}/blackmagic/blackmagic/src/gdb_packet.c"
 )
 
 set(INCLUDE_DIRECTORIES
@@ -54,10 +65,10 @@ set(INCLUDE_DIRECTORIES
     "blackmagic/src"
     "blackmagic/src/include"
     "blackmagic/src/platforms/common"
-    "attack"
+    "attack/include"
 )
 
 add_library(blackmagic ${SOURCES})
-message(STATUS "SOURCES: ${SOURCES}")
 add_definitions(-DPROBE_HOST=pico -DPC_HOSTED=0 -DNO_LIBOPENCM3=1)
 target_include_directories(blackmagic PRIVATE ${INCLUDE_DIRECTORIES})
+target_link_libraries(blackmagic pico_stdlib)
