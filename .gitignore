@@ -1,3 +1,5 @@
 build/
 blackmagic/attack/include/version.h
 /payload.h
+CMakeFiles/
+CMakeCache.txt

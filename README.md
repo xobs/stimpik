@@ -9,7 +9,7 @@ This attack uses a Raspberry Pi Pico.
 ```
 git submodule update --init
 export PICO_SDK_PATH=path-to-pico-sdk
-cmake -B build
+cmake -B build build
 make -C build
 ```
 

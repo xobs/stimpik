@@ -1,9 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
 
-if(NOT DEFINED PICO_SDK_PATH)
-    set(PICO_SDK_PATH "/usr/share/pico-sdk")
-endif()
-
 # initialize the SDK based on PICO_SDK_PATH
 # note: this must happen before project()
 include(pico_sdk_import.cmake)
