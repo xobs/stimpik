@@ -14,20 +14,26 @@
 .syntax divided
 .thumb
 
+#define SKIP_STAGE1
+
 .section .isr_vector
 .thumb
 isr_vectors:
 	/* The STM32F4 will consult this address to determine the stack pointer address. */
 	.word 0x20005000
 	/* The STM32F4 will consult this address to determine the entrypoint */
+#ifdef SKIP_STAGE1
+	.word _start_stage2+1
+#else
 	.word _start_stage1+1
+#endif
 	/* The next six words serve double-duty: They act as a normal vector table,
 	 * and they pad it out so that the word pointing to _start_stage2 is at offset
 	 * 0x20 from the start.
 	 */
-	.word vecNMI+1
-	.word vecHardfault+1
-	.word vecMemMan+1
+	.word Handle_NMI+1
+	.word Handle_HardFault+1
+	.word Handle_MemoryManage+1
 	.word 0
 	.word 0
 	.word 0
@@ -50,10 +56,11 @@ stage2_pointer:
 
 /* nop sled to ensure _start_stage1 is located after 0x200001e0 */
 nop_sled:
-.rept 230
+.rept 256
 	nop
 .endr
 
+#ifndef SKIP_STAGE1
 _start_stage1: /* stage 1 */
 	ldr r0, =0xe0002000		/* FPB Address Space */
 
@@ -75,20 +82,21 @@ _start_stage1: /* stage 1 */
 sinfl:
 	/* Spin forever waiting for the exploit to be triggered */
 	b sinfl
-
+#endif
 
 _start:
 _start_stage2:
 	/* Set stack pointer by reading it out of the vector table */
+	#if 0
 	ldr r0, =isr_vectors
 	ldr r0, [r0]
 	mov sp, r0
 
 	/* Enable interrupts */
-	cpsie if
+	//cpsie if
 	
 	/* Configure VTOR */
-	ldr r0, =0xe000ED08
+	ldr r0, =0xE000ED08
 	ldr r1, =isr_vectors
 	str r1, [r0]
 
@@ -96,14 +104,14 @@ _start_stage2:
 	ldr r0, =_bss_end
 	ldr r1, =_bss_start
 	mov r3, #0
-
-	/* NOTE: There is no .data section as we're running from RAM -- it's all .text */
-
 clrloop:
 	strd r3, r3, [r1]
 	add r1, r1, #8
 	cmp r1, r0
 	bne clrloop
+#endif
+
+	/* NOTE: There is no .data section as we're running from RAM -- it's all .text */
 
 	bl main
 
@@ -111,8 +119,8 @@ infloop:
 	b infloop
 
 
-vecNMI:
-vecHardfault:
-vecMemMan:
+Handle_NMI:
+Handle_HardFault:
+Handle_MemoryManage:
 	mrs r0, IPSR
 	b alertCrash

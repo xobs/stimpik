@@ -35,5 +35,5 @@ SECTIONS
         *(.bss*)
         . = ALIGN(8);
         _bss_end = .;
-    } >RAM
+    } >RAM = 0xa5
 }

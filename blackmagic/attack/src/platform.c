@@ -1,4 +1,5 @@
 #include "config.h"
+// #include <target/cortexm.h>
 #include <hardware/gpio.h>
 #include <pico/stdlib.h>
 #include <stdarg.h>
@@ -20,7 +21,6 @@ void platform_max_frequency_set(const uint32_t frequency)
 
 void platform_nrst_set_val(bool assert)
 {
-	gpio_put(RESET_PIN, 0);
 	gpio_set_dir(RESET_PIN, assert ? GPIO_OUT : GPIO_IN);
 }
 
@@ -71,3 +71,9 @@ void gdb_out(const char *buf)
 {
 	printf("%s", buf);
 }
+
+//  void stimpik_cortexm_pc_write(target_s *target, const uint32_t val)
+// {
+// 	target_mem_write32(target, CORTEXM_DCRDR, val);
+// 	target_mem_write32(target, CORTEXM_DCRSR, CORTEXM_DCRSR_REGWnR | 0x0fU);
+// }

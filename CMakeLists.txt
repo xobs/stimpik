@@ -39,7 +39,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/payload.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/payload/start.S
                 -o ${CMAKE_BINARY_DIR}/payload/start.o
     COMMAND ${CMAKE_C_COMPILER}
-                -mthumb -mcpu=cortex-m3 -Os -g3 -c
+                -mthumb -mcpu=cortex-m3 -Os -g3 -c -Wall
                 ${CMAKE_CURRENT_SOURCE_DIR}/payload/main.c
                 -o ${CMAKE_BINARY_DIR}/payload/main.o
     COMMAND ${CMAKE_C_COMPILER}
@@ -63,12 +63,3 @@ add_custom_target(payload ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload.h)
 
 # Include the binary file in the main target
 add_dependencies(attack payload)
-
-# Read the binary file into a variable
-# file(READ payload.bin PAYLOAD_HEX HEX)
-
-# # Convert the hex string to a char array
-# string(REGEX REPLACE "(..)" "\\\\x\\1" PAYLOAD_CONTENT "${PAYLOAD_HEX}")
-
-# # Generate a header file with the binary content
-# file(WRITE payload.h "const char payload[] = \"${PAYLOAD_CONTENT}\";")
