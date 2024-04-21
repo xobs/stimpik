@@ -1,6 +1,10 @@
+#include "config.h"
+#include <hardware/gpio.h>
+#include <pico/stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 static uint32_t platform_max_frequency = 100000000;
 
@@ -14,19 +18,20 @@ void platform_max_frequency_set(const uint32_t frequency)
 	platform_max_frequency = frequency;
 }
 
-void platform_nrst_set_val(bool nrst)
+void platform_nrst_set_val(bool assert)
 {
-	(void)nrst;
+	gpio_put(RESET_PIN, 0);
+	gpio_set_dir(RESET_PIN, assert ? GPIO_OUT : GPIO_IN);
 }
 
 bool platform_nrst_get_val(void)
 {
-	return false;
+	return !gpio_get(RESET_PIN);
 }
 
 void platform_delay(uint32_t ms)
 {
-	(void)ms;
+	sleep_ms(ms);
 }
 
 const char *platform_target_voltage(void)
@@ -41,8 +46,7 @@ void platform_target_clk_output_enable(bool enable)
 
 uint32_t platform_time_ms(void)
 {
-	static int time;
-	return time += 1;
+	return time_us_64() / 1000;
 }
 
 int platform_hwversion(void)

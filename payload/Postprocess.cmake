@@ -10,4 +10,4 @@ file(READ ${file} PAYLOAD_BINARY_FILE_HEX HEX)
 string(REGEX REPLACE "(..)" "\\\\x\\1" PAYLOAD_BINARY_FILE_CONTENT "${PAYLOAD_BINARY_FILE_HEX}")
 
 # Generate a header file with the binary content
-file(WRITE ${CMAKE_BINARY_DIR}/payload.h "const char payload[] = \"${PAYLOAD_BINARY_FILE_CONTENT}\";")
+file(WRITE ${output} "const char payload[] = \"${PAYLOAD_BINARY_FILE_CONTENT}\";")

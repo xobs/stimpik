@@ -66,9 +66,10 @@ set(INCLUDE_DIRECTORIES
     "blackmagic/src/include"
     "blackmagic/src/platforms/common"
     "attack/include"
+    ".."
 )
 
 add_library(blackmagic ${SOURCES})
-add_definitions(-DPROBE_HOST=pico -DPC_HOSTED=0 -DNO_LIBOPENCM3=1)
+add_definitions(-DPROBE_HOST=pico -DPC_HOSTED=0 -DENABLE_DEBUG=1 -DNO_LIBOPENCM3=1)
 target_include_directories(blackmagic PRIVATE ${INCLUDE_DIRECTORIES})
 target_link_libraries(blackmagic pico_stdlib)

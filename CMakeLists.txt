@@ -28,12 +28,11 @@ target_link_libraries(attack pico_stdlib
 )
 
 pico_enable_stdio_usb(attack 1)
-pico_enable_stdio_uart(attack 0)
 
 pico_add_extra_outputs(attack)
 
 # Build the payload
-add_custom_command(OUTPUT payload.bin
+add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/payload.h
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/payload
     COMMAND ${CMAKE_C_COMPILER}
                 -mthumb -mcpu=cortex-m3 -g3 -c
@@ -50,7 +49,9 @@ add_custom_command(OUTPUT payload.bin
                 ${CMAKE_BINARY_DIR}/payload/main.o
                 -o ${CMAKE_BINARY_DIR}/payload.elf
     COMMAND ${CMAKE_OBJCOPY} -O binary ${CMAKE_BINARY_DIR}/payload.elf ${CMAKE_BINARY_DIR}/payload.bin
-    COMMAND ${CMAKE_COMMAND} -Dfile=${CMAKE_BINARY_DIR}/payload.bin -P ${CMAKE_CURRENT_SOURCE_DIR}/payload/Postprocess.cmake
+    COMMAND ${CMAKE_COMMAND} -Dfile=${CMAKE_BINARY_DIR}/payload.bin
+                             -Doutput=${CMAKE_CURRENT_SOURCE_DIR}/payload.h
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/payload/Postprocess.cmake
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload/start.S
             ${CMAKE_CURRENT_SOURCE_DIR}/payload/main.c
             ${CMAKE_CURRENT_SOURCE_DIR}/payload/payload.ld
@@ -58,7 +59,7 @@ add_custom_command(OUTPUT payload.bin
     COMMENT "Building payload.bin"
 )
 # Add the binary file to the target
-add_custom_target(payload ALL DEPENDS payload.bin)
+add_custom_target(payload ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload.h)
 
 # Include the binary file in the main target
 add_dependencies(attack payload)

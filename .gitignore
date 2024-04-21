@@ -1,2 +1,3 @@
 build/
 blackmagic/attack/include/version.h
+/payload.h
