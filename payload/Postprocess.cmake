@@ -4,7 +4,7 @@
 # through the cmake during build time in order to be cross-platform.
 
 # Read the binary file into a string and convert it to hex
-file(READ ${file} PAYLOAD_BINARY_FILE_HEX HEX)
+file(READ ${input} PAYLOAD_BINARY_FILE_HEX HEX)
 
 # Convert the hex string to a char array
 string(REGEX REPLACE "(..)" "\\\\x\\1" PAYLOAD_BINARY_FILE_CONTENT "${PAYLOAD_BINARY_FILE_HEX}")

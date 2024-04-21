@@ -14,7 +14,7 @@ project(attack C CXX ASM)
 pico_sdk_init()
 
 add_executable(attack
-    attack.c
+    stimpik.c
     bmp-loader.c
 )
 
@@ -40,20 +40,20 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/payload.h
                 -o ${CMAKE_BINARY_DIR}/payload/start.o
     COMMAND ${CMAKE_C_COMPILER}
                 -mthumb -mcpu=cortex-m3 -Os -g3 -c -Wall
-                ${CMAKE_CURRENT_SOURCE_DIR}/payload/main.c
-                -o ${CMAKE_BINARY_DIR}/payload/main.o
+                ${CMAKE_CURRENT_SOURCE_DIR}/payload/payload.c
+                -o ${CMAKE_BINARY_DIR}/payload/payload.o
     COMMAND ${CMAKE_C_COMPILER}
                 -nostartfiles -mcpu=cortex-m3 -mthumb -g3
                 -T ${CMAKE_CURRENT_SOURCE_DIR}/payload/payload.ld
                 ${CMAKE_BINARY_DIR}/payload/start.o
-                ${CMAKE_BINARY_DIR}/payload/main.o
+                ${CMAKE_BINARY_DIR}/payload/payload.o
                 -o ${CMAKE_BINARY_DIR}/payload.elf
     COMMAND ${CMAKE_OBJCOPY} -O binary ${CMAKE_BINARY_DIR}/payload.elf ${CMAKE_BINARY_DIR}/payload.bin
-    COMMAND ${CMAKE_COMMAND} -Dfile=${CMAKE_BINARY_DIR}/payload.bin
+    COMMAND ${CMAKE_COMMAND} -Dinput=${CMAKE_BINARY_DIR}/payload.bin
                              -Doutput=${CMAKE_CURRENT_SOURCE_DIR}/payload.h
                              -P ${CMAKE_CURRENT_SOURCE_DIR}/payload/Postprocess.cmake
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload/start.S
-            ${CMAKE_CURRENT_SOURCE_DIR}/payload/main.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/payload/payload.c
             ${CMAKE_CURRENT_SOURCE_DIR}/payload/payload.ld
             ${CMAKE_CURRENT_SOURCE_DIR}/payload/Postprocess.cmake
     COMMENT "Building payload.bin"
