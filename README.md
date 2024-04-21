@@ -12,3 +12,7 @@ export PICO_SDK_PATH=path-to-pico-sdk
 cmake -B build
 make -C build
 ```
+
+## Using
+
+Load `build/stimpik.uf2` onto a Pico. Then connect via USB.

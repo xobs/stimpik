@@ -8,12 +8,12 @@ endif()
 # note: this must happen before project()
 include(pico_sdk_import.cmake)
 
-project(attack C CXX ASM)
+project(stimpik C CXX ASM)
 
 # initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-add_executable(attack
+add_executable(stimpik
     stimpik.c
     bmp-loader.c
 )
@@ -21,15 +21,15 @@ add_executable(attack
 add_subdirectory(blackmagic)
 
 # Add pico_stdlib library which aggregates commonly used features
-target_link_libraries(attack pico_stdlib 
+target_link_libraries(stimpik pico_stdlib 
     hardware_uart 
     hardware_pwm
     blackmagic
 )
 
-pico_enable_stdio_usb(attack 1)
+pico_enable_stdio_usb(stimpik 1)
 
-pico_add_extra_outputs(attack)
+pico_add_extra_outputs(stimpik)
 
 # Build the payload
 add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/payload.h
@@ -62,4 +62,4 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/payload.h
 add_custom_target(payload ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload.h)
 
 # Include the binary file in the main target
-add_dependencies(attack payload)
+add_dependencies(stimpik payload)
