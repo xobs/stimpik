@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 static volatile uint32_t *IDCODE = (uint32_t *)0xe0042000;
@@ -15,6 +16,9 @@ static volatile uint32_t *GPIOB_CRL_F1 = (uint32_t *)0x40010C00u;
 static volatile uint32_t *GPIOB_CRH_F1 = (uint32_t *)0x40010C04u;
 static volatile uint32_t *GPIOB_IDR_F1 = (uint32_t *)0x40010C08u;
 static volatile uint32_t *GPIOB_BSRR_F1 = (uint32_t *)0x40010C10u;
+
+#define DIO GPIOA, P13
+#define CLK GPIOA, P14
 
 enum Bank {
 	GPIOA,
@@ -40,8 +44,14 @@ enum Pin {
 	P15 = 15,
 };
 
+enum Dir {
+	INPUT,
+	OUTPUT,
+};
+
 static void (*gpio_out)(enum Bank bank, enum Pin pin, bool on);
 static bool (*gpio_get)(enum Bank bank, enum Pin pin);
+static void (*gpio_dir)(enum Bank bank, enum Pin pin, enum Dir dir);
 
 static uint32_t readl(const volatile void *addr)
 {
@@ -90,6 +100,37 @@ static bool gpio_get_f1(enum Bank bank, enum Pin pin)
 	return 0;
 }
 
+static void gpio_dir_f1(enum Bank bank, enum Pin pin, enum Dir dir)
+{
+	volatile uint32_t *reg = NULL;
+	switch (bank) {
+	case GPIOA:
+		if (pin < 8) {
+			reg = GPIOA_CRL_F1;
+		} else {
+			reg = GPIOA_CRH_F1;
+			pin -= 8;
+		}
+		break;
+	case GPIOB:
+		if (pin < 8) {
+			reg = GPIOB_CRL_F1;
+		} else {
+			reg = GPIOB_CRH_F1;
+			pin -= 8;
+		}
+		break;
+	}
+
+	uint32_t dir_value = 4;
+	if (dir == INPUT) {
+		dir_value = 4;
+	} else if (dir == OUTPUT) {
+		dir_value = 3;
+	}
+	writel(reg, (readl(reg) & ~(0xF << (pin * 4))) | (dir_value << (pin * 4)));
+}
+
 static void gpio_init(bool repurpose_swd)
 {
 	switch (readl(IDCODE) & 0xFFF) {
@@ -98,48 +139,52 @@ static void gpio_init(bool repurpose_swd)
 		// Ungate GPIOA and GPIOB, as well as AFIO
 		writel(RCC_APB2ENR_F1, (1 << 2) | (1 << 3) | (1 << 0));
 
+		gpio_out = gpio_out_f1;
+		gpio_get = gpio_get_f1;
+		gpio_dir = gpio_dir_f1;
+
 		if (repurpose_swd) {
 			// Disable the debug port, since we'll use it for GPIO access. Without
 			// this, the pins will stay mapped as SWD.
 			writel(AFIO_MAPR_F1, (4 << 24));
 
 			// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
-			writel(GPIOA_CRH_F1, (readl(GPIOA_CRH_F1) & ~0x0FF00000) | 0x03300000);
+			gpio_dir(GPIOA, P13, INPUT);
+			gpio_dir(GPIOA, P14, INPUT);
 		}
 
 		// Configure LEDs on PA0 and PA3 as outputs
-		writel(GPIOA_CRL_F1, (readl(GPIOA_CRL_F1) & ~0x0000F00F) | 0x00003003);
+		gpio_dir(GPIOA, P0, OUTPUT);
+		gpio_dir(GPIOA, P3, OUTPUT);
 
 		// Configure PB7 as GPIO output
-		writel(GPIOB_CRL_F1, (readl(GPIOB_CRL_F1) & ~0xF0000000) | 0x30000000);
+		gpio_dir(GPIOB, P7, OUTPUT);
 
 		// Configure PB15 as GPIO output
-		writel(GPIOB_CRH_F1, (readl(GPIOB_CRH_F1) & ~0xF0000000) | 0x30000000);
+		gpio_dir(GPIOB, P15, OUTPUT);
 
-		gpio_out = gpio_out_f1;
-		gpio_get = gpio_get_f1;
 		break;
 	}
 }
 
 static void led1(bool on)
 {
-	gpio_out(GPIOA, P0, on);
+	gpio_out(GPIOA, P3, !on);
 }
 
 static void led2(bool on)
 {
-	gpio_out(GPIOA, P3, on);
+	gpio_out(GPIOA, P0, !on);
 }
 
 static void led3(bool on)
 {
-	gpio_out(GPIOB, P15, on);
+	gpio_out(GPIOB, P15, !on);
 }
 
 static void led4(bool on)
 {
-	gpio_out(GPIOB, P7, on);
+	gpio_out(GPIOB, P7, !on);
 }
 
 static void send_bit(bool bit)
@@ -155,7 +200,7 @@ static void send_bit(bool bit)
 
 int main_stage1(void)
 {
-	static int count = 0;
+	int count = 0;
 	gpio_init(false);
 	while (1) {
 		delay(20);
@@ -166,23 +211,136 @@ int main_stage1(void)
 	}
 }
 
+#define HOST_TO_TARGET_PREFIX 0x5ad7
+#define TARGET_TO_HOST_PREFIX 0x734f
+
+enum CommandState {
+	/// @brief  Look for magic prefix HOST_TO_TARGET_PREFIX
+	CMD_READ_PREFIX,
+	CMD_READ_DATA,
+	CMD_TURNAROUND_RW,
+	/// @brief Writing prefix TARGET_TO_HOST_PREFIX
+	CMD_WRITE_PREFIX,
+	CMD_WRITE_DATA,
+	CMD_TURNAROUND_WR,
+};
+
+static uint32_t handle_packet(uint32_t packet)
+{
+	switch (packet & 0xff) {
+	case 0:
+		return 0xdeadbeef;
+	case 1:
+		return 0xf00fc7c8;
+	case 2:
+		return 0x12345678;
+	case 3:
+		return 0x87654321;
+	default:
+		return 0x5aa55a55;
+	}
+}
+
 int main_stage2(void)
 {
-	static int count = 0;
+	int count = 0;
 	gpio_init(true);
 	led1(false);
 	led2(false);
 	led3(false);
-	led4(true);
+	led4(false);
 
 	// Toggle swclk to let the other side know we're alive
+	bool last_swclk = gpio_get(CLK);
+	bool clk;
+	bool dio;
+	enum CommandState state = CMD_READ_PREFIX;
+	uint32_t word = 0;
+	uint32_t word_length = 32;
+	uint8_t bit = 0;
+
+	bool reply_ready = false;
+	uint32_t reply = 0;
+
+	gpio_dir(DIO, INPUT);
+	gpio_dir(CLK, INPUT);
+
 	while (1) {
-		led1(!!(count & 512));
-		led2(!!(count & 1024));
-		led3(!!(count & 2048));
-		led4(!!(count & 4096));
-		send_bit(true);
-		send_bit(false);
+		led1(!!(count & 8192));
+		// led2(!!(count & 512));
+		// led3(!!(count & 1024));
+		// led4(!!(count & 4096));
+
+		clk = gpio_get(CLK);
+		// Falling edge of CLK
+		if (!clk && last_swclk) {
+			switch (state) {
+			case CMD_READ_PREFIX:
+				dio = gpio_get(DIO);
+				led2(true);
+				word = (word << 1) | dio;
+				if ((word & 0xff) == 0xad) {
+					state = CMD_READ_DATA;
+					word = 0;
+					bit = 0;
+				}
+				break;
+
+			case CMD_READ_DATA:
+				led4(true);
+				dio = gpio_get(DIO);
+				word = (word << 1) | dio;
+				bit += 1;
+				if (bit > word_length) {
+					state = CMD_TURNAROUND_RW;
+					// Write a `1` until we have data
+					gpio_out(DIO, true);
+					bit = 0;
+				}
+				break;
+
+			case CMD_TURNAROUND_RW:
+				gpio_dir(DIO, OUTPUT);
+				if (reply_ready) {
+					state = CMD_WRITE_PREFIX;
+					word = TARGET_TO_HOST_PREFIX;
+					word_length = 16;
+					bit = 0;
+				}
+				break;
+
+			case CMD_WRITE_PREFIX:
+				gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
+				bit += 1;
+				if (bit >= word_length) {
+					state = CMD_WRITE_DATA;
+					bit = 0;
+					word = reply;
+					word_length = 32;
+				}
+				break;
+
+			case CMD_WRITE_DATA:
+				gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
+				bit += 1;
+				if (bit >= word_length) {
+					state = CMD_TURNAROUND_WR;
+					bit = 0;
+					word = 0;
+				}
+				break;
+
+			case CMD_TURNAROUND_WR:
+				gpio_dir(DIO, INPUT);
+				state = CMD_READ_PREFIX;
+				break;
+			}
+		}
+
+		if (state == CMD_TURNAROUND_RW) {
+			reply = handle_packet(word);
+			reply_ready = true;
+		}
 		count += 1;
 	}
 	// // Flash size register, RM0008, page 1076:
