@@ -1,96 +1,173 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef uint32_t *reg_t;
+static volatile uint32_t *IDCODE = (uint32_t *)0xe0042000;
 
-static const volatile reg_t RCC_APB2ENR = (reg_t)0x40021018u;
+static volatile uint32_t *RCC_APB2ENR_F1 = (uint32_t *)0x40021018u;
+static volatile uint32_t *AFIO_MAPR_F1 = (uint32_t *)0x40010004u;
 
-static const volatile reg_t GPIOA_CRL = (reg_t)0x40010800u;
-static const volatile reg_t GPIOA_CRH = (reg_t)0x40010804u;
-static const volatile reg_t GPIOA_BSRR = (reg_t)0x40010810u;
-static const volatile reg_t GPIOA_BRR = (reg_t)0x40010814u;
+static volatile uint32_t *GPIOA_CRL_F1 = (uint32_t *)0x40010800u;
+static volatile uint32_t *GPIOA_CRH_F1 = (uint32_t *)0x40010804u;
+static volatile uint32_t *GPIOA_IDR_F1 = (uint32_t *)0x40010808u;
+static volatile uint32_t *GPIOA_BSRR_F1 = (uint32_t *)0x40010810u;
 
-static const volatile reg_t GPIOB_CRL = (reg_t)0x40010C00u;
-static const volatile reg_t GPIOB_CRH = (reg_t)0x40010C04u;
-static const volatile reg_t GPIOB_BSRR = (reg_t)0x40010C10u;
-static const volatile reg_t GPIOB_BRR = (reg_t)0x40010C14u;
+static volatile uint32_t *GPIOB_CRL_F1 = (uint32_t *)0x40010C00u;
+static volatile uint32_t *GPIOB_CRH_F1 = (uint32_t *)0x40010C04u;
+static volatile uint32_t *GPIOB_IDR_F1 = (uint32_t *)0x40010C08u;
+static volatile uint32_t *GPIOB_BSRR_F1 = (uint32_t *)0x40010C10u;
 
-// SWDIO: PA13
-// SWCLK: PA14
+enum Bank {
+	GPIOA,
+	GPIOB,
+};
 
-static void configure_swd_as_gpio(void)
+enum Pin {
+	P0 = 0,
+	P1 = 1,
+	P2 = 2,
+	P3 = 3,
+	P4 = 4,
+	P5 = 5,
+	P6 = 6,
+	P7 = 7,
+	P8 = 8,
+	P9 = 9,
+	P10 = 10,
+	P11 = 11,
+	P12 = 12,
+	P13 = 13,
+	P14 = 14,
+	P15 = 15,
+};
+
+static void (*gpio_out)(enum Bank bank, enum Pin pin, bool on);
+static bool (*gpio_get)(enum Bank bank, enum Pin pin);
+
+static uint32_t readl(const volatile void *addr)
 {
-	// Ungate GPIOA
-	*RCC_APB2ENR |= (1 << 2);
-
-	// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
-	*GPIOA_CRH = (*GPIOA_CRH & ~0x0FF000000) | 0x033000000;
+	return *(volatile uint32_t *)addr;
 }
 
-static void configure_leds(void)
+static void writel(volatile void *addr, uint32_t val)
 {
-	// Ungate GPIOA and GPIOB
-	*RCC_APB2ENR |= (1 << 2) | (1 << 3);
+	*(volatile uint32_t *)addr = val;
+}
 
-	// Configure PA0 and PA3 as outputs
-	*GPIOA_CRL = (*GPIOA_CRL & ~0x0000F00F) | 0x00003003;
+static void delay(uint32_t count)
+{
+	for (int i = 0; i < count; i++) {
+		__asm__("nop");
+	}
+}
 
-	// Configure PB2 as GPIO output
-	*GPIOB_CRL = (*GPIOB_CRL & ~0x000000F00) | 0x000000300;
+static void gpio_out_f1(enum Bank bank, enum Pin pin, bool on)
+{
+	if (on) {
+		pin += 0;
+	} else {
+		pin += 16;
+	}
+	switch (bank) {
+	case GPIOA:
+		writel(GPIOA_BSRR_F1, 1 << pin);
+		break;
+	case GPIOB:
+		writel(GPIOB_BSRR_F1, 1 << pin);
+		break;
+	}
+}
 
-	// Configure PB15 as GPIO output
-	*GPIOB_CRH = (*GPIOB_CRH & ~0xF00000000) | 0x300000000;
+static bool gpio_get_f1(enum Bank bank, enum Pin pin)
+{
+	switch (bank) {
+	case GPIOA:
+		return !!(readl(GPIOA_IDR_F1) & (1 << pin));
+		break;
+	case GPIOB:
+		return !!(readl(GPIOB_IDR_F1) & (1 << pin));
+		break;
+	}
+	return 0;
+}
+
+static void gpio_init(void)
+{
+	switch (readl(IDCODE) & 0xFFF) {
+	case 0x410:
+	default:
+		// Ungate GPIOA and GPIOB, as well as AFIO
+		writel(RCC_APB2ENR_F1, (1 << 2) | (1 << 3) | (1 << 0));
+
+		// Disable the debug port, since we'll use it for GPIO access. Without
+		// this, the pins will stay mapped as SWD.
+		writel(AFIO_MAPR_F1, (4 << 24));
+
+		// Configure LEDs on PA0 and PA3 as outputs
+		writel(GPIOA_CRL_F1, (readl(GPIOA_CRL_F1) & ~0x0000F00F) | 0x00003003);
+
+		// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
+		writel(GPIOA_CRH_F1, (readl(GPIOA_CRH_F1) & ~0x0FF00000) | 0x03300000);
+
+		// Configure PB7 as GPIO output
+		writel(GPIOB_CRL_F1, (readl(GPIOB_CRL_F1) & ~0xF0000000) | 0x30000000);
+
+		// Configure PB15 as GPIO output
+		writel(GPIOB_CRH_F1, (readl(GPIOB_CRH_F1) & ~0xF0000000) | 0x30000000);
+
+		gpio_out = gpio_out_f1;
+		gpio_get = gpio_get_f1;
+		break;
+	}
 }
 
 static void led1(bool on)
 {
-	*(on ? GPIOA_BSRR : GPIOA_BRR) = 1 << 0;
+	gpio_out(GPIOA, P0, on);
 }
 
 static void led2(bool on)
 {
-	*(on ? GPIOA_BSRR : GPIOA_BRR) = 1 << 3;
+	gpio_out(GPIOA, P3, on);
 }
 
 static void led3(bool on)
 {
-	*(on ? GPIOB_BSRR : GPIOB_BRR) = 1 << 2;
+	gpio_out(GPIOB, P15, on);
 }
 
 static void led4(bool on)
 {
-	*(on ? GPIOB_BSRR : GPIOB_BRR) = 1 << 15;
+	gpio_out(GPIOB, P7, on);
 }
 
 static void send_bit(bool bit)
 {
-	int i;
-	*(bit ? GPIOA_BSRR : GPIOA_BRR) = 1 << 13;
+	gpio_out(GPIOA, P13, bit);
 
 	// Toggle the clock bit to indicate a sample is ready
-	*GPIOA_BSRR = (1 << 14);
-	for (i = 0; i < 1000; i++) {
-		__asm__("nop");
-	}
-	*GPIOA_BRR = (1 << 14);
-	for (i = 0; i < 1000; i++) {
-		__asm__("nop");
-	}
+	gpio_out(GPIOA, P14, false);
+	delay(10);
+	gpio_out(GPIOA, P14, true);
+	delay(10);
 }
 
 int main(void)
 {
-	configure_leds();
+	static int count = 0;
+	gpio_init();
 	led1(false);
-	led2(true);
-	configure_swd_as_gpio();
-	int count = 0;
+	led2(false);
+	led3(false);
+	led4(true);
+
 	// Toggle swclk to let the other side know we're alive
 	while (1) {
-		led3(count&9);
-		led4(count&6);
-		send_bit(1);
-		send_bit(0);
+		led1(!!(count & 512));
+		led2(!!(count & 1024));
+		led3(!!(count & 2048));
+		led4(!!(count & 4096));
+		send_bit(true);
+		send_bit(false);
 		count += 1;
 	}
 	// // Flash size register, RM0008, page 1076:
@@ -281,8 +358,15 @@ void alertCrash(uint32_t crashId)
 	// 	writeByte(crashId);
 	// 	writeStr("\r\nRestart required!\r\n\r\n");
 	// 	*((uint32_t *) 0xE000ED0C) = 0x05FA0004u;
-	while (1)
-		;
+	static int error_count = 0;
+	led1(true);
+	led2(false);
+	while (1) {
+		led3(!!(error_count & 2));
+		led4(!!(error_count & 4));
+		error_count += 1;
+		delay(1000);
+	}
 }
 
 // void readMem(uint32_t const addr, uint32_t const len)

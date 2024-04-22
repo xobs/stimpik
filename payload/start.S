@@ -14,7 +14,7 @@
 .syntax divided
 .thumb
 
-#define SKIP_STAGE1
+//#define SKIP_STAGE1
 
 .section .isr_vector
 .thumb
@@ -62,7 +62,8 @@ nop_sled:
 
 #ifndef SKIP_STAGE1
 _start_stage1: /* stage 1 */
-	ldr r0, =0xe0002000		/* FPB Address Space */
+	/* FPB Address Space */
+	ldr r0, =0xe0002000
 
 	/* FP_CTRL: Enable FPB (bit 0) with key set (bit 1) */
 	movs r1, #3
@@ -86,20 +87,35 @@ sinfl:
 
 _start:
 _start_stage2:
+	/* Disable the FPB to make debugging easier */
+	ldr r0, =0xe0002000
+	movs r1, #2
+	str r1, [r0]
+
 	/* Set stack pointer by reading it out of the vector table */
-	#if 0
 	ldr r0, =isr_vectors
 	ldr r0, [r0]
 	mov sp, r0
 
 	/* Enable interrupts */
-	//cpsie if
+	cpsie if
 	
 	/* Configure VTOR */
 	ldr r0, =0xE000ED08
 	ldr r1, =isr_vectors
 	str r1, [r0]
 
+#if 1
+	/* Clear BSS */
+	movs r0, #0
+	ldr  r1, =_bss_start
+	ldr  r2, =_bss_end
+bss_loop:
+	str  r0, [r1]
+	add r1, #4
+	cmp  r1, r2
+	blt bss_loop
+#else
 	/* Zero out .bss */
 	ldr r0, =_bss_end
 	ldr r1, =_bss_start
@@ -114,10 +130,7 @@ clrloop:
 	/* NOTE: There is no .data section as we're running from RAM -- it's all .text */
 
 	bl main
-
-infloop:
-	b infloop
-
+	b .
 
 Handle_NMI:
 Handle_HardFault:
