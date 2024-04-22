@@ -90,7 +90,7 @@ static bool gpio_get_f1(enum Bank bank, enum Pin pin)
 	return 0;
 }
 
-static void gpio_init(void)
+static void gpio_init(bool repurpose_swd)
 {
 	switch (readl(IDCODE) & 0xFFF) {
 	case 0x410:
@@ -98,15 +98,17 @@ static void gpio_init(void)
 		// Ungate GPIOA and GPIOB, as well as AFIO
 		writel(RCC_APB2ENR_F1, (1 << 2) | (1 << 3) | (1 << 0));
 
-		// Disable the debug port, since we'll use it for GPIO access. Without
-		// this, the pins will stay mapped as SWD.
-		writel(AFIO_MAPR_F1, (4 << 24));
+		if (repurpose_swd) {
+			// Disable the debug port, since we'll use it for GPIO access. Without
+			// this, the pins will stay mapped as SWD.
+			writel(AFIO_MAPR_F1, (4 << 24));
+
+			// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
+			writel(GPIOA_CRH_F1, (readl(GPIOA_CRH_F1) & ~0x0FF00000) | 0x03300000);
+		}
 
 		// Configure LEDs on PA0 and PA3 as outputs
 		writel(GPIOA_CRL_F1, (readl(GPIOA_CRL_F1) & ~0x0000F00F) | 0x00003003);
-
-		// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
-		writel(GPIOA_CRH_F1, (readl(GPIOA_CRH_F1) & ~0x0FF00000) | 0x03300000);
 
 		// Configure PB7 as GPIO output
 		writel(GPIOB_CRL_F1, (readl(GPIOB_CRL_F1) & ~0xF0000000) | 0x30000000);
@@ -151,10 +153,23 @@ static void send_bit(bool bit)
 	delay(10);
 }
 
-int main(void)
+int main_stage1(void)
 {
 	static int count = 0;
-	gpio_init();
+	gpio_init(false);
+	while (1) {
+		delay(20);
+		led2(!!(count & 8192));
+		led4(!!(count & 8192));
+		led3(count > 131072);
+		count += 1;
+	}
+}
+
+int main_stage2(void)
+{
+	static int count = 0;
+	gpio_init(true);
 	led1(false);
 	led2(false);
 	led3(false);
@@ -352,8 +367,9 @@ int main(void)
 // 	}
 // }
 
-void alertCrash(uint32_t crashId)
+void alert_crash(uint32_t crash_id)
 {
+	(void)crash_id;
 	// 	writeStr("!!! EXCEPTION !!!\r\nID: ");
 	// 	writeByte(crashId);
 	// 	writeStr("\r\nRestart required!\r\n\r\n");

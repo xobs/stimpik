@@ -80,9 +80,20 @@ _start_stage1: /* stage 1 */
 	/* Write all three values into the FPB address space */
 	stm r0!, {r1, r2, r3}
 
-sinfl:
-	/* Spin forever waiting for the exploit to be triggered */
-	b sinfl
+	/* Clear BSS */
+	movs r0, #0
+	ldr  r1, =_bss_start
+	ldr  r2, =_bss_end
+bss_loop1:
+	str  r0, [r1]
+	add r1, #4
+	cmp  r1, r2
+	blt bss_loop1
+
+	/* NOTE: There is no .data section as we're running from RAM -- it's all .text */
+
+	bl main_stage1
+	b .
 #endif
 
 _start:
@@ -105,35 +116,23 @@ _start_stage2:
 	ldr r1, =isr_vectors
 	str r1, [r0]
 
-#if 1
 	/* Clear BSS */
 	movs r0, #0
 	ldr  r1, =_bss_start
 	ldr  r2, =_bss_end
-bss_loop:
+bss_loop2:
 	str  r0, [r1]
 	add r1, #4
 	cmp  r1, r2
-	blt bss_loop
-#else
-	/* Zero out .bss */
-	ldr r0, =_bss_end
-	ldr r1, =_bss_start
-	mov r3, #0
-clrloop:
-	strd r3, r3, [r1]
-	add r1, r1, #8
-	cmp r1, r0
-	bne clrloop
-#endif
+	blt bss_loop2
 
 	/* NOTE: There is no .data section as we're running from RAM -- it's all .text */
 
-	bl main
+	bl main_stage2
 	b .
 
 Handle_NMI:
 Handle_HardFault:
 Handle_MemoryManage:
 	mrs r0, IPSR
-	b alertCrash
+	b alert_crash

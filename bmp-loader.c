@@ -1,5 +1,6 @@
 #include "blackmagic/blackmagic/src/include/exception.h"
 #include "blackmagic/blackmagic/src/include/target.h"
+#include "config.h"
 #include <pico/stdlib.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -76,11 +77,10 @@ int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_on
 
 	free(readback);
 
-	// stimpik_cortexm_pc_write(cur_target, ((uint32_t *)data)[1]);
-	target_halt_resume(cur_target, false);
-
-	// sleep_ms(10000);
-
+	// Put device into reset to prevent whatever's running from
+	// stomping on the payload.
+	gpio_set_dir(RESET_PIN, GPIO_OUT);
+	// target_halt_resume(cur_target, false);
 	target_detach(cur_target);
 
 	return 0;
