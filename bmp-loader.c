@@ -9,7 +9,58 @@
 #include <string.h>
 
 bool adiv5_swd_scan(const uint32_t targetid);
-void stimpik_cortexm_pc_write(target_s *target, const uint32_t val);
+// void stimpik_pc_write(target_s *target, const uint32_t val);
+// void stimpik_sp_write(target_s *target, const uint32_t val);
+void stimpik_start_stub(target_s *target, uint32_t pc, uint32_t sp);
+
+int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset)
+{
+	target_s *cur_target;
+	target_controller_s cur_controller;
+	memset(&cur_controller, 0, sizeof(cur_controller));
+
+	volatile struct exception e;
+	TRY_CATCH (e, EXCEPTION_ALL) {
+		if (!adiv5_swd_scan(0)) {
+			printf("No target found\n");
+			return -1;
+		}
+		cur_target = target_attach_n(1, &cur_controller);
+		if (cur_target == NULL) {
+			printf("Unable to attach to target\n");
+			return -1;
+		}
+		// Note: TRY_CATCH(..) apparently has a loop in it, so it's effectively
+		// while (1) { try { ... } catch { ... } }
+		// Hence we need to "break" here.
+		break;
+	}
+	if (e.type) {
+		printf("Unable to attach: %s\n", e.msg);
+		return -1;
+	}
+
+	target_halt_request(cur_target);
+
+	if (target_mem_write(cur_target, offset, data, length)) {
+		printf("Unable to write payload!\n");
+		return -1;
+	}
+
+	uint32_t sp = ((uint32_t *)data)[0];
+	// uint32_t pc = ((uint32_t *)data)[1]; // Stage 1
+	uint32_t pc = ((uint32_t *)data)[8]; // Stage 2
+	printf("Set payload PC to 0x%08x and SP to 0x%08x\n", pc, sp);
+	stimpik_start_stub(cur_target, pc, sp);
+
+	int halt_reason = target_halt_poll(cur_target, NULL);
+	if (halt_reason != 0) {
+		printf("Target halted!   Reason: %d\n", halt_reason);
+	}
+
+	return 0;
+}
+
 
 int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_only)
 {
