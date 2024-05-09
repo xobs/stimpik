@@ -13,7 +13,7 @@ bool adiv5_swd_scan(const uint32_t targetid);
 // void stimpik_sp_write(target_s *target, const uint32_t val);
 void stimpik_start_stub(target_s *target, uint32_t pc, uint32_t sp);
 
-int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset)
+int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset, int stage)
 {
 	target_s *cur_target;
 	target_controller_s cur_controller;
@@ -48,9 +48,12 @@ int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset)
 	}
 
 	uint32_t sp = ((uint32_t *)data)[0];
-	// uint32_t pc = ((uint32_t *)data)[1]; // Stage 1
-	uint32_t pc = ((uint32_t *)data)[8]; // Stage 2
-	printf("Set payload PC to 0x%08x and SP to 0x%08x\n", pc, sp);
+	uint32_t pc = 0;
+	if (stage == 1)
+		pc = ((uint32_t *)data)[1]; // Stage 1
+	else if (stage == 2)
+		pc = ((uint32_t *)data)[8]; // Stage 2
+	printf("Jumping to stage %d -- Set payload PC to 0x%08x and SP to 0x%08x\n", stage, pc, sp);
 	stimpik_start_stub(cur_target, pc, sp);
 
 	int halt_reason = target_halt_poll(cur_target, NULL);
@@ -60,7 +63,6 @@ int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset)
 
 	return 0;
 }
-
 
 int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_only)
 {
