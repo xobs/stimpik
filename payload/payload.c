@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CMD_BITS  1
+#define CMD_BITS  7
 #define DATA_BITS 32
 
 static volatile uint32_t *IDCODE = (uint32_t *)0xe0042000;
@@ -207,33 +207,6 @@ int main_stage1(void)
 	}
 }
 
-enum CommandState {
-	/// @brief  Look for magic prefix HOST_TO_TARGET_PREFIX
-	CMD_READ_PREFIX,
-	CMD_READ_DATA,
-	CMD_TURNAROUND_RW,
-	/// @brief Writing prefix TARGET_TO_HOST_PREFIX
-	CMD_WRITE_PREFIX,
-	CMD_WRITE_DATA,
-	CMD_TURNAROUND_WR,
-};
-
-static uint32_t handle_packet(uint32_t packet)
-{
-	switch (packet & 0xff) {
-	case 0:
-		return 0xdeadbeef;
-	case 1:
-		return 0xf00fc7c8;
-	case 2:
-		return 0x12345678;
-	case 3:
-		return 0x87654321;
-	default:
-		return 0x5aa55a55;
-	}
-}
-
 enum TwiState {
 	TWI_STATE_IDLE,
 	TWI_STATE_START,
@@ -271,7 +244,9 @@ int main_stage2(void)
 	// Toggle swclk to let the other side know we're alive
 	bool last_swclk = gpio_get(CLK);
 	bool last_swdio = gpio_get(DIO);
-	enum CommandState state = CMD_READ_PREFIX;
+
+	uint8_t last_write_cmd = 0;
+	uint32_t cmd_counter = 0;
 
 	while (1) {
 		count += 1;
@@ -291,6 +266,7 @@ int main_stage2(void)
 
 		// START condition -- the only time DIO falls when CLK is low
 		if (falling_dio && !clk && !falling_clk) {
+			cmd_counter += 1;
 			twi.state = TWI_STATE_START;
 			twi.bit = 0;
 			twi.cmd = 0;
@@ -316,6 +292,7 @@ int main_stage2(void)
 			led2(false);
 			twi.is_write = dio;
 			if (twi.is_write) {
+				last_write_cmd = twi.cmd;
 				twi.state = TWI_STATE_WRITE;
 				gpio_dir(DIO, INPUT);
 				twi.reg = 0;
@@ -324,7 +301,7 @@ int main_stage2(void)
 				twi.state = TWI_STATE_READ_TURNAROUND;
 				gpio_out(DIO, false);
 				// XXX HACK -- increment the register to show we're alive
-				twi.reg += 1;
+				twi.reg = last_write_cmd << 8 | twi.cmd | ((count & 0xff) << 16) | ((cmd_counter & 0xff) << 24);
 				led1(true);
 			}
 			twi.bit = 0;
