@@ -62,6 +62,10 @@ int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_on
 
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
+static void xmit_delay(void) {
+	sleep_ms(1);
+}
+
 static void target_power(bool on)
 {
 	if (on) {
@@ -143,22 +147,23 @@ __attribute__((section(".data"))) static uint32_t powerdown_attack(void)
 static void put_bit(bool bit)
 {
 	gpio_put(SWDIO_PIN, bit);
-	sleep_ms(1);
+	xmit_delay();
 	gpio_put(SWCLK_PIN, 0);
-	sleep_ms(1);
+	xmit_delay();
 	gpio_put(SWCLK_PIN, 1);
+	xmit_delay();
 }
 
 static bool get_bit(void)
 {
 	bool ret = false;
 	gpio_put(SWCLK_PIN, 0);
-	sleep_ms(1);
+	xmit_delay();
 	if (gpio_get(SWDIO_PIN)) {
 		ret = true;
 	}
 	gpio_put(SWCLK_PIN, 1);
-	sleep_ms(1);
+	xmit_delay();
 	return ret;
 }
 
@@ -169,11 +174,11 @@ static void send_cmd(uint8_t cmd, uint32_t payload)
 	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
 	gpio_put(SWDIO_PIN, true);
 	gpio_put(SWCLK_PIN, false);
-	sleep_ms(1);
+	xmit_delay();
 	gpio_put(SWDIO_PIN, false);
-	sleep_ms(1);
+	xmit_delay();
 	gpio_put(SWCLK_PIN, true);
-	sleep_ms(1);
+	xmit_delay();
 
 	for (i = 0; i < CMD_BITS; i += 1) {
 		put_bit(!!(cmd & (1 << i)));
@@ -199,20 +204,20 @@ static uint32_t read_cmd(uint8_t cmd)
 	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
 	gpio_put(SWDIO_PIN, true);
 	gpio_put(SWCLK_PIN, false);
-	sleep_ms(1);
+	xmit_delay();
 	gpio_put(SWDIO_PIN, false);
-	sleep_ms(1);
+	xmit_delay();
 	gpio_put(SWCLK_PIN, true);
-	sleep_ms(1);
+	xmit_delay();
 
 	// 7 bits of command
 	for (i = 0; i < CMD_BITS; i += 1) {
 		put_bit(!!(cmd & (1 << i)));
 	}
 	put_bit(false); // Device -> Host
-	sleep_ms(1);
+	xmit_delay();
 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	put_bit(false); // Turnaround bit
+	// put_bit(false); // Turnaround bit
 
 	for (i = 0; i < DATA_BITS; i += 1) {
 		if (get_bit()) {
@@ -351,7 +356,7 @@ int main(void)
 		if (c == 's') {
 			static uint32_t index = 0;
 			uint32_t value = 0xf00f000f;
-			send_cmd(index, value);
+			send_cmd(index, index ? value : 0);
 			printf("Sent 0x%08x to 0x%02x\n", value, index);
 			index += 1;
 			if (index > 6) {
