@@ -63,7 +63,7 @@ int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_on
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
 static void xmit_delay(void) {
-	sleep_ms(1);
+	sleep_us(50);
 }
 
 static void target_power(bool on)
@@ -188,11 +188,6 @@ static void send_cmd(uint8_t cmd, uint32_t payload)
 	for (i = 0; i < DATA_BITS; i += 1) {
 		put_bit(!!(payload & (1 << i)));
 	}
-
-	// Dummy clocks
-	for (i = 0; i < 8; i += 1) {
-		put_bit(false);
-	}
 }
 
 static uint32_t read_cmd(uint8_t cmd)
@@ -217,7 +212,7 @@ static uint32_t read_cmd(uint8_t cmd)
 	put_bit(false); // Device -> Host
 	xmit_delay();
 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	// put_bit(false); // Turnaround bit
+	put_bit(false); // Turnaround bit
 
 	for (i = 0; i < DATA_BITS; i += 1) {
 		if (get_bit()) {
@@ -225,10 +220,8 @@ static uint32_t read_cmd(uint8_t cmd)
 		}
 	}
 
-	// Dummy clocks
-	for (i = 0; i < 8; i += 1) {
-		put_bit(false);
-	}
+	// Dummy clock for footer
+	put_bit(false);
 	return response;
 }
 
