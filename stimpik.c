@@ -26,7 +26,7 @@
  *
  */
 
-#define CMD_BITS  1
+#define CMD_BITS  7
 #define DATA_BITS 32
 
 #include <hardware/uart.h>
@@ -352,16 +352,16 @@ int main(void)
 			send_cmd(index, index ? value : 0);
 			printf("Sent 0x%08x to 0x%02x\n", value, index);
 			index += 1;
-			if (index > 6) {
+			if (index > 128) {
 				index = 0;
 			}
 		}
 		if (c == 'g') {
-			static uint32_t index = 0;
-			uint32_t response = read_cmd(0xff);
+			static uint32_t index = 3;
+			uint32_t response = read_cmd(index);
 			printf("Response from 0x%02x: 0x%08x\n", index, response);
 			index += 1;
-			if (index > 6) {
+			if (index > 128) {
 				index = 0;
 			}
 		}
