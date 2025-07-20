@@ -26,6 +26,9 @@
  *
  */
 
+#define CMD_BITS  1
+#define DATA_BITS 32
+
 #include <hardware/uart.h>
 #include <hardware/pwm.h>
 #include <hardware/watchdog.h>
@@ -37,7 +40,7 @@
 #include "config.h"
 #include "payload.h"
 
-int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset);
+int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset, int stage);
 int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_only);
 
 // Exact steps for attack:
@@ -92,6 +95,7 @@ static int handle_control(uint32_t timeout_ms)
 		break;
 
 	case 's':
+	case 'g':
 		break;
 
 	default:
@@ -101,6 +105,7 @@ static int handle_control(uint32_t timeout_ms)
 		printf("    r    Restart Pico\n");
 		printf("    c    Continue to stage 2\n");
 		printf("    s    Send command\n");
+		printf("    g    Get response\n");
 		printf("\n");
 		break;
 	}
@@ -135,56 +140,89 @@ __attribute__((section(".data"))) static uint32_t powerdown_attack(void)
 	return count;
 }
 
-static void send_word(uint32_t packet, uint8_t count)
+static void put_bit(bool bit)
 {
+	gpio_put(SWDIO_PIN, bit);
+	sleep_ms(1);
+	gpio_put(SWCLK_PIN, 0);
+	sleep_ms(1);
+	gpio_put(SWCLK_PIN, 1);
+}
+
+static bool get_bit(void)
+{
+	bool ret = false;
+	gpio_put(SWCLK_PIN, 0);
+	sleep_ms(1);
+	if (gpio_get(SWDIO_PIN)) {
+		ret = true;
+	}
+	gpio_put(SWCLK_PIN, 1);
+	sleep_ms(1);
+	return ret;
+}
+
+static void send_cmd(uint8_t cmd, uint32_t payload)
+{
+	int i;
+	// Drive DIO H->L when CLK is low
 	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
-	for (int i = count; i > 0; i -= 1) {
-		uint8_t bit = !!(packet & (1 << (i - 1)));
-		gpio_put(SWDIO_PIN, bit);
-		sleep_ms(1);
-		gpio_put(SWCLK_PIN, 0);
-		sleep_ms(1);
-		gpio_put(SWCLK_PIN, 1);
+	gpio_put(SWDIO_PIN, true);
+	gpio_put(SWCLK_PIN, false);
+	sleep_ms(1);
+	gpio_put(SWDIO_PIN, false);
+	sleep_ms(1);
+	gpio_put(SWCLK_PIN, true);
+	sleep_ms(1);
+
+	for (i = 0; i < CMD_BITS; i += 1) {
+		put_bit(!!(cmd & (1 << i)));
+	}
+	put_bit(true); // Host -> Device
+
+	for (i = 0; i < DATA_BITS; i += 1) {
+		put_bit(!!(payload & (1 << i)));
+	}
+
+	// Dummy clocks
+	for (i = 0; i < 8; i += 1) {
+		put_bit(false);
 	}
 }
 
-static uint32_t receive_word(uint8_t count)
+static uint32_t read_cmd(uint8_t cmd)
 {
+	int i;
+	uint32_t response = 0;
+
+	// Drive DIO H->L when CLK is low
+	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+	gpio_put(SWDIO_PIN, true);
+	gpio_put(SWCLK_PIN, false);
+	sleep_ms(1);
+	gpio_put(SWDIO_PIN, false);
+	sleep_ms(1);
+	gpio_put(SWCLK_PIN, true);
+	sleep_ms(1);
+
+	// 7 bits of command
+	for (i = 0; i < CMD_BITS; i += 1) {
+		put_bit(!!(cmd & (1 << i)));
+	}
+	put_bit(false); // Device -> Host
+	sleep_ms(1);
 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	uint32_t result = 0;
-	for (int i = 0; i < count; i++) {
-		gpio_put(SWCLK_PIN, 0);
-		sleep_ms(1);
-		result = (result << 1) | !!gpio_get(SWDIO_PIN);
-		gpio_put(SWCLK_PIN, 1);
-		sleep_ms(1);
+	put_bit(false); // Turnaround bit
+
+	for (i = 0; i < DATA_BITS; i += 1) {
+		if (get_bit()) {
+			response |= 1 << i;
+		}
 	}
-}
 
-static uint32_t packet_txrx(uint32_t packet)
-{
-	send_word(0x5ad7, 16);
-	sleep_ms(500);
-
-	send_word(packet, 32);
-	sleep_ms(500);
-
-	// Turnaround
-	receive_word(1);
-	sleep_ms(500);
-
-	uint32_t header = receive_word(16);
-	sleep_ms(500);
-
-	uint32_t response = receive_word(32);
-	sleep_ms(500);
-
-	// Turnaround
-	receive_word(1);
-	sleep_ms(500);
-
-	if ((header & 0xffff) != 0x734f) {
-		printf("Invalid header: Got %04x, expected 0x734f\n", header);
+	// Dummy clocks
+	for (i = 0; i < 8; i += 1) {
+		put_bit(false);
 	}
 	return response;
 }
@@ -244,7 +282,7 @@ int main(void)
 	validate_reset();
 
 	if (1) {
-		while (bmp_loader_launcher(payload, sizeof(payload), 0x20000000) != 0) {
+		while (bmp_loader_launcher(payload, sizeof(payload), 0x20000000, 2) != 0) {
 			printf("Target not found... retrying\n");
 			handle_control(500);
 		}
@@ -312,13 +350,22 @@ int main(void)
 
 		if (c == 's') {
 			static uint32_t index = 0;
-			uint32_t response = packet_txrx(index);
-			printf("Sent 0x%08x, received 0x%08x\n", index, response);
+			uint32_t value = 0xf00f000f;
+			send_cmd(index, value);
+			printf("Sent 0x%08x to 0x%02x\n", value, index);
 			index += 1;
 			if (index > 6) {
 				index = 0;
 			}
 		}
-
+		if (c == 'g') {
+			static uint32_t index = 0;
+			uint32_t response = read_cmd(0xff);
+			printf("Response from 0x%02x: 0x%08x\n", index, response);
+			index += 1;
+			if (index > 6) {
+				index = 0;
+			}
+		}
 	}
 }
