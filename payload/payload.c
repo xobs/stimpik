@@ -65,7 +65,7 @@ static void writel(volatile void *addr, uint32_t val)
 
 static void delay(uint32_t count)
 {
-	for (int i = 0; i < count; i++) {
+	for (uint32_t i = 0; i < count; i++) {
 		__asm__("nop");
 	}
 }
@@ -149,8 +149,8 @@ static void gpio_init(bool repurpose_swd)
 			writel(AFIO_MAPR_F1, (4 << 24));
 
 			// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
-			gpio_dir(GPIOA, P13, INPUT);
-			gpio_dir(GPIOA, P14, INPUT);
+			gpio_dir(DIO, INPUT);
+			gpio_dir(CLK, INPUT);
 		}
 
 		// Configure LEDs on PA0 and PA3 as outputs
@@ -185,17 +185,6 @@ static void led3(bool on)
 static void led4(bool on)
 {
 	gpio_out(GPIOB, P7, !on);
-}
-
-static void send_bit(bool bit)
-{
-	gpio_out(GPIOA, P13, bit);
-
-	// Toggle the clock bit to indicate a sample is ready
-	gpio_out(GPIOA, P14, false);
-	delay(10);
-	gpio_out(GPIOA, P14, true);
-	delay(10);
 }
 
 int main_stage1(void)
@@ -250,6 +239,8 @@ int main_stage2(void)
 	led3(false);
 	led4(false);
 
+	delay(60000);
+
 	// Toggle swclk to let the other side know we're alive
 	bool last_swclk = gpio_get(CLK);
 	bool clk;
@@ -266,20 +257,24 @@ int main_stage2(void)
 	gpio_dir(CLK, INPUT);
 
 	while (1) {
-		led1(!!(count & 8192));
+		led1(!!(count & 16384));
 		// led2(!!(count & 512));
 		// led3(!!(count & 1024));
 		// led4(!!(count & 4096));
 
 		clk = gpio_get(CLK);
+		bool falling_edge = !clk && last_swclk;
+		bool rising_edge = clk && !last_swclk;
+		last_swclk = clk;
+
 		// Falling edge of CLK
-		if (!clk && last_swclk) {
+		if (falling_edge && ((state == CMD_READ_PREFIX) || (state == CMD_READ_DATA) || (state == CMD_TURNAROUND_WR))) {
 			switch (state) {
 			case CMD_READ_PREFIX:
 				dio = gpio_get(DIO);
 				led2(true);
 				word = (word << 1) | dio;
-				if ((word & 0xff) == 0xad) {
+				if ((word & 0xffff) == HOST_TO_TARGET_PREFIX) {
 					state = CMD_READ_DATA;
 					word = 0;
 					bit = 0;
@@ -287,19 +282,33 @@ int main_stage2(void)
 				break;
 
 			case CMD_READ_DATA:
-				led4(true);
+				led3(true);
 				dio = gpio_get(DIO);
 				word = (word << 1) | dio;
 				bit += 1;
 				if (bit > word_length) {
 					state = CMD_TURNAROUND_RW;
+					reply_ready = false;
 					// Write a `1` until we have data
 					gpio_out(DIO, true);
 					bit = 0;
 				}
 				break;
 
+			case CMD_TURNAROUND_WR:
+				led4(false);
+				gpio_dir(DIO, INPUT);
+				state = CMD_READ_PREFIX;
+				break;
+
+			default:
+				break;
+			}
+		} else if (rising_edge &&
+			((state == CMD_WRITE_PREFIX) || (state == CMD_WRITE_DATA) || (state == CMD_TURNAROUND_RW))) {
+			switch (state) {
 			case CMD_TURNAROUND_RW:
+				led4(true);
 				gpio_dir(DIO, OUTPUT);
 				if (reply_ready) {
 					state = CMD_WRITE_PREFIX;
@@ -310,7 +319,9 @@ int main_stage2(void)
 				break;
 
 			case CMD_WRITE_PREFIX:
-				gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
+				led2(false);
+				// gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
+				gpio_out(DIO, bit & 1);
 				bit += 1;
 				if (bit >= word_length) {
 					state = CMD_WRITE_DATA;
@@ -321,6 +332,7 @@ int main_stage2(void)
 				break;
 
 			case CMD_WRITE_DATA:
+				led3(false);
 				gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
 				bit += 1;
 				if (bit >= word_length) {
@@ -330,9 +342,7 @@ int main_stage2(void)
 				}
 				break;
 
-			case CMD_TURNAROUND_WR:
-				gpio_dir(DIO, INPUT);
-				state = CMD_READ_PREFIX;
+			default:
 				break;
 			}
 		}

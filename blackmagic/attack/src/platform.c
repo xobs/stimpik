@@ -1,5 +1,5 @@
 #include "config.h"
-// #include <target/cortexm.h>
+#include <target/cortexm.h>
 #include <hardware/gpio.h>
 #include <pico/stdlib.h>
 #include <stdarg.h>
@@ -72,8 +72,16 @@ void gdb_out(const char *buf)
 	printf("%s", buf);
 }
 
-//  void stimpik_cortexm_pc_write(target_s *target, const uint32_t val)
-// {
-// 	target_mem_write32(target, CORTEXM_DCRDR, val);
-// 	target_mem_write32(target, CORTEXM_DCRSR, CORTEXM_DCRSR_REGWnR | 0x0fU);
-// }
+void stimpik_start_stub(target_s *target, uint32_t pc, uint32_t sp)
+{
+	uint32_t regs[CORTEXM_GENERAL_REG_COUNT + CORTEX_FLOAT_REG_COUNT] = {0};
+
+	regs[CORTEX_REG_PC] = pc;
+	regs[CORTEX_REG_XPSR] = CORTEXM_XPSR_THUMB;
+	regs[CORTEX_REG_SP] = sp;
+	regs[CORTEX_REG_MSP] = sp;
+	regs[CORTEX_REG_PSP] = sp;
+
+	target_regs_write(target, regs);
+	target_halt_resume(target, false);
+}
