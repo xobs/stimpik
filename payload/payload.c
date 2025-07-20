@@ -276,6 +276,7 @@ int main_stage2(void)
 	enum CommandState state = CMD_READ_PREFIX;
 
 	while (1) {
+		count += 1;
 		// led1(!!(count & 1024));
 		// led2(!!(count & 512));
 		// led3(!!(count & 1024));
@@ -296,6 +297,11 @@ int main_stage2(void)
 			twi.bit = 0;
 			twi.cmd = 0;
 			led4(true);
+			continue;
+		}
+
+		if (rising_clk && (twi.state == TWI_STATE_IDLE)) {
+			gpio_dir(DIO, INPUT);
 		} else if (falling_clk && (twi.state == TWI_STATE_START)) {
 			led1(false);
 			led2(true);
@@ -329,18 +335,17 @@ int main_stage2(void)
 			twi.reg |= dio << twi.bit;
 			twi.bit += 1;
 			if (twi.bit >= DATA_BITS) {
-				gpio_dir(DIO, INPUT);
+				// gpio_dir(DIO, INPUT);
 				twi.state = TWI_STATE_IDLE;
 			}
 		} else if (rising_clk && (twi.state == TWI_STATE_READ)) {
 			gpio_out(DIO, twi.reg & (1 << twi.bit));
 			twi.bit += 1;
-			if (twi.bit >= DATA_BITS) {
-				gpio_dir(DIO, INPUT);
+			if (twi.bit > DATA_BITS) {
+				// gpio_dir(DIO, INPUT);
 				twi.state = TWI_STATE_IDLE;
 			}
 		}
-		count += 1;
 	}
 }
 
