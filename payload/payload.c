@@ -207,9 +207,6 @@ int main_stage1(void)
 	}
 }
 
-#define HOST_TO_TARGET_PREFIX 0x5ad7
-#define TARGET_TO_HOST_PREFIX 0x734f
-
 enum CommandState {
 	/// @brief  Look for magic prefix HOST_TO_TARGET_PREFIX
 	CMD_READ_PREFIX,
@@ -242,6 +239,7 @@ enum TwiState {
 	TWI_STATE_START,
 	TWI_STATE_RW,
 	TWI_STATE_WRITE,
+	TWI_STATE_READ_TURNAROUND,
 	TWI_STATE_READ,
 };
 
@@ -292,7 +290,7 @@ int main_stage2(void)
 		last_swdio = dio;
 
 		// START condition -- the only time DIO falls when CLK is low
-		if (falling_dio && !clk) {
+		if (falling_dio && !clk && !falling_clk) {
 			twi.state = TWI_STATE_START;
 			twi.bit = 0;
 			twi.cmd = 0;
@@ -323,9 +321,8 @@ int main_stage2(void)
 				twi.reg = 0;
 				led3(true);
 			} else {
-				twi.state = TWI_STATE_READ;
+				twi.state = TWI_STATE_READ_TURNAROUND;
 				gpio_out(DIO, false);
-				gpio_dir(DIO, OUTPUT);
 				// XXX HACK -- increment the register to show we're alive
 				twi.reg += 1;
 				led1(true);
@@ -338,11 +335,13 @@ int main_stage2(void)
 				// gpio_dir(DIO, INPUT);
 				twi.state = TWI_STATE_IDLE;
 			}
+		} else if (rising_clk && (twi.state == TWI_STATE_READ_TURNAROUND)) {
+			gpio_dir(DIO, OUTPUT);
+			twi.state = TWI_STATE_READ;
 		} else if (rising_clk && (twi.state == TWI_STATE_READ)) {
 			gpio_out(DIO, twi.reg & (1 << twi.bit));
 			twi.bit += 1;
 			if (twi.bit > DATA_BITS) {
-				// gpio_dir(DIO, INPUT);
 				twi.state = TWI_STATE_IDLE;
 			}
 		}
