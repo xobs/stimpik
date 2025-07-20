@@ -2,6 +2,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define CMD_BITS  1
+#define DATA_BITS 32
+
 static volatile uint32_t *IDCODE = (uint32_t *)0xe0042000;
 
 static volatile uint32_t *RCC_APB2ENR_F1 = (uint32_t *)0x40021018u;
@@ -47,6 +50,7 @@ enum Pin {
 enum Dir {
 	INPUT,
 	OUTPUT,
+	OUTPUT_OD,
 };
 
 static void (*gpio_out)(enum Bank bank, enum Pin pin, bool on);
@@ -77,6 +81,7 @@ static void gpio_out_f1(enum Bank bank, enum Pin pin, bool on)
 	} else {
 		pin += 16;
 	}
+
 	switch (bank) {
 	case GPIOA:
 		writel(GPIOA_BSRR_F1, 1 << pin);
@@ -127,6 +132,8 @@ static void gpio_dir_f1(enum Bank bank, enum Pin pin, enum Dir dir)
 		dir_value = 4;
 	} else if (dir == OUTPUT) {
 		dir_value = 3;
+	} else if (dir == OUTPUT_OD) {
+		dir_value = 7;
 	}
 	writel(reg, (readl(reg) & ~(0xF << (pin * 4))) | (dir_value << (pin * 4)));
 }
@@ -230,310 +237,112 @@ static uint32_t handle_packet(uint32_t packet)
 	}
 }
 
+enum TwiState {
+	TWI_STATE_IDLE,
+	TWI_STATE_START,
+	TWI_STATE_RW,
+	TWI_STATE_WRITE,
+	TWI_STATE_READ,
+};
+
+struct Twi {
+	uint32_t reg;
+	enum TwiState state;
+	uint8_t bit;
+	uint8_t cmd;
+	bool is_write;
+};
+
 int main_stage2(void)
 {
 	int count = 0;
+	struct Twi twi = {
+		.reg = 0,
+		.state = TWI_STATE_IDLE,
+		.bit = 0,
+		.cmd = 0,
+	};
 	gpio_init(true);
 	led1(false);
 	led2(false);
 	led3(false);
-	led4(false);
+	led4(true);
 
 	delay(60000);
 
 	// Toggle swclk to let the other side know we're alive
 	bool last_swclk = gpio_get(CLK);
-	bool clk;
-	bool dio;
+	bool last_swdio = gpio_get(DIO);
 	enum CommandState state = CMD_READ_PREFIX;
-	uint32_t word = 0;
-	uint32_t word_length = 32;
-	uint8_t bit = 0;
-
-	bool reply_ready = false;
-	uint32_t reply = 0;
-
-	gpio_dir(DIO, INPUT);
-	gpio_dir(CLK, INPUT);
 
 	while (1) {
-		led1(!!(count & 16384));
+		// led1(!!(count & 1024));
 		// led2(!!(count & 512));
 		// led3(!!(count & 1024));
 		// led4(!!(count & 4096));
 
-		clk = gpio_get(CLK);
-		bool falling_edge = !clk && last_swclk;
-		bool rising_edge = clk && !last_swclk;
+		bool clk = gpio_get(CLK);
+		bool dio = gpio_get(DIO);
+		bool falling_clk = !clk && last_swclk;
+		bool rising_clk = clk && !last_swclk;
+		bool falling_dio = !dio && last_swdio;
+		bool rising_dio = dio && !last_swdio;
 		last_swclk = clk;
+		last_swdio = dio;
 
-		// Falling edge of CLK
-		if (falling_edge && ((state == CMD_READ_PREFIX) || (state == CMD_READ_DATA) || (state == CMD_TURNAROUND_WR))) {
-			switch (state) {
-			case CMD_READ_PREFIX:
-				dio = gpio_get(DIO);
-				led2(true);
-				word = (word << 1) | dio;
-				if ((word & 0xffff) == HOST_TO_TARGET_PREFIX) {
-					state = CMD_READ_DATA;
-					word = 0;
-					bit = 0;
-				}
-				break;
-
-			case CMD_READ_DATA:
-				led3(true);
-				dio = gpio_get(DIO);
-				word = (word << 1) | dio;
-				bit += 1;
-				if (bit > word_length) {
-					state = CMD_TURNAROUND_RW;
-					reply_ready = false;
-					// Write a `1` until we have data
-					gpio_out(DIO, true);
-					bit = 0;
-				}
-				break;
-
-			case CMD_TURNAROUND_WR:
-				led4(false);
+		// START condition -- the only time DIO falls when CLK is low
+		if (falling_dio && !clk) {
+			twi.state = TWI_STATE_START;
+			twi.bit = 0;
+			twi.cmd = 0;
+			led4(true);
+		} else if (falling_clk && (twi.state == TWI_STATE_START)) {
+			led1(false);
+			led2(true);
+			led3(false);
+			led4(false);
+			if (dio) {
+				twi.cmd |= 1 << twi.bit;
+			}
+			twi.bit += 1;
+			if (twi.bit >= CMD_BITS) {
+				twi.state = TWI_STATE_RW;
+			}
+		} else if (falling_clk && (twi.state == TWI_STATE_RW)) {
+			led2(false);
+			twi.is_write = dio;
+			if (twi.is_write) {
+				twi.state = TWI_STATE_WRITE;
 				gpio_dir(DIO, INPUT);
-				state = CMD_READ_PREFIX;
-				break;
-
-			default:
-				break;
-			}
-		} else if (rising_edge &&
-			((state == CMD_WRITE_PREFIX) || (state == CMD_WRITE_DATA) || (state == CMD_TURNAROUND_RW))) {
-			switch (state) {
-			case CMD_TURNAROUND_RW:
-				led4(true);
+				twi.reg = 0;
+				led3(true);
+			} else {
+				twi.state = TWI_STATE_READ;
+				gpio_out(DIO, false);
 				gpio_dir(DIO, OUTPUT);
-				if (reply_ready) {
-					state = CMD_WRITE_PREFIX;
-					word = TARGET_TO_HOST_PREFIX;
-					word_length = 16;
-					bit = 0;
-				}
-				break;
-
-			case CMD_WRITE_PREFIX:
-				led2(false);
-				// gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
-				gpio_out(DIO, bit & 1);
-				bit += 1;
-				if (bit >= word_length) {
-					state = CMD_WRITE_DATA;
-					bit = 0;
-					word = reply;
-					word_length = 32;
-				}
-				break;
-
-			case CMD_WRITE_DATA:
-				led3(false);
-				gpio_out(DIO, (word >> ((word_length - 1) - bit)) & 1);
-				bit += 1;
-				if (bit >= word_length) {
-					state = CMD_TURNAROUND_WR;
-					bit = 0;
-					word = 0;
-				}
-				break;
-
-			default:
-				break;
+				// XXX HACK -- increment the register to show we're alive
+				twi.reg += 1;
+				led1(true);
 			}
-		}
-
-		if (state == CMD_TURNAROUND_RW) {
-			reply = handle_packet(word);
-			reply_ready = true;
+			twi.bit = 0;
+		} else if (falling_clk && (twi.state == TWI_STATE_WRITE)) {
+			twi.reg |= dio << twi.bit;
+			twi.bit += 1;
+			if (twi.bit >= DATA_BITS) {
+				gpio_dir(DIO, INPUT);
+				twi.state = TWI_STATE_IDLE;
+			}
+		} else if (rising_clk && (twi.state == TWI_STATE_READ)) {
+			gpio_out(DIO, twi.reg & (1 << twi.bit));
+			twi.bit += 1;
+			if (twi.bit >= DATA_BITS) {
+				gpio_dir(DIO, INPUT);
+				twi.state = TWI_STATE_IDLE;
+			}
 		}
 		count += 1;
 	}
-	// // Flash size register, RM0008, page 1076:
-	// // https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
-
-	// uint32_t flash_size = *(uint32_t*) 0x1FFFF7E0 & 0xFFFF;
-	// if(flash_size == 64)        // Force reading of the entire 128KB flash in 64KB devices, often used.
-	// 	flash_size = 128;
-
-	// /* Print start magic to inform the attack board that
-	//    we are going to dump */
-	// for (uint32_t i = 0; i < sizeof(DUMP_START_MAGIC); i++) {
-	// 	writeChar(DUMP_START_MAGIC[i]);
-	// }
-
-	// uint32_t const * addr = (uint32_t*) 0x08000000;
-	// while (((uintptr_t) addr) < (0x08000000U + (flash_size * 1024U) )) {
-	// 	writeWordBe(*addr);
-	// 	++addr;
-	// }
 }
-
-// /* hex must have length 8 */
-// uint32_t hexToInt(uint8_t const * const hex)
-// {
-// 	uint32_t ind = 0u;
-// 	uint32_t res = 0u;
-
-// 	for (ind = 0; ind < 8; ++ind) {
-// 		uint8_t chr = hex[ind];
-// 		uint32_t val = 0u;
-
-// 		res <<= 4u;
-
-// 		if ((chr >= '0') && (chr <= '9')) {
-// 			val = chr - '0';
-// 		} else if ((chr >= 'a') && (chr <= 'f')) {
-// 			val = chr - 'a' + 0x0a;
-// 		} else if ((chr >= 'A') && (chr <= 'F')) {
-// 			val = chr - 'A' + 0x0a;
-// 		} else {
-// 			val = 0u;
-// 		}
-// 		res |= val;
-// 	}
-
-// 	return res;
-// }
-
-// void readChar( uint8_t const chr )
-// {
-// #define CMDBUF_LEN (64u)
-// 	static uint8_t cmdbuf[CMDBUF_LEN] = {0u};
-// 	static uint32_t cmdInd = 0u;
-
-// 	switch (chr) {
-// 	case '\n':
-// 	case '\r':
-// 		cmdbuf[cmdInd] = 0u;
-// 		if (cmdInd != 0) {
-// 			writeStr("\r\n");
-// 		}
-// 		readCmd(cmdbuf);
-// 		cmdInd = 0u;
-// 		writeStr("\r\n> ");
-// 		{
-// 			uint32_t ind = 0u;
-// 			for (ind = 0; ind<CMDBUF_LEN; ++ind) {
-// 				cmdbuf[ind]=0x00u;
-// 			}
-// 		}
-// 		break;
-
-// 	case 8:
-// 	case 255:
-// 	case 127: /* TODO backspace */
-// 		if (cmdInd > 0u)
-// 			--cmdInd;
-// 		writeChar(chr);
-// 		break;
-
-// 	default:
-// 		if (cmdInd < (CMDBUF_LEN - 1)) {
-// 			cmdbuf[cmdInd] = chr;
-// 			++cmdInd;
-// 			writeChar(chr);
-// 		}
-// 		break;
-// 	}
-// }
-
-// void readCmd( uint8_t const * const cmd )
-// {
-// 	switch (cmd[0]) {
-// 	case 0:
-// 		return;
-// 		break;
-
-// 	/* read 32-bit command */
-// 	case 'r':
-// 	case 'R':
-// 		/* r 08000000 00000100 */
-// 		readMem(hexToInt(&cmd[2]), hexToInt(&cmd[11]));
-// 		break;
-
-// 	/* write 32-bit command */
-// 	case 'w':
-// 	case 'W':
-// 		/* w 20000000 12345678 */
-// 		writeMem(hexToInt(&cmd[2]), hexToInt(&cmd[11]));
-// 		break;
-
-// 	/* Dump all flash */
-// 	case 'd':
-// 	case 'D':
-// 		writeStr("\r\n\r\n");
-// 		{
-// 			uint32_t const * addr = (uint32_t*) 0x08000000;
-// 			uint32_t br = 8u;
-// 			while (((uintptr_t) addr) < (0x08000000 + 64u * 1024u)) {
-// 				if (br == 8u) {
-// 					writeStr("\r\n[");
-// 					writeWordBe((uint32_t) addr);
-// 					writeStr("]: ");
-// 					br = 0u;
-// 				}
-
-// 				writeWordBe(*addr);
-// 				writeChar(' ');
-// 				++addr;
-// 				++br;
-// 			}
-// 		}
-// 		writeStr("\r\n\r\n");
-// 		break;
-
-// 	/* Help command */
-// 	case 'h':
-// 	case 'H':
-// 		writeStr(strHelp);
-// 		break;
-
-// 	/* Reboot */
-// 	case 's':
-// 	case 'S':
-// 		writeStr("Rebooting...\r\n\r\n");
-// 		*((uint32_t *) 0xE000ED0C) = 0x05FA0004u;
-// 		break;
-
-// 	/* exit */
-// 	case 'e':
-// 	case 'E':
-// 		writeStr("Bye.\r\n");
-// 		while (1) {
-// 			__asm__ volatile("wfi");
-// 		}
-// 		break;
-
-// 	default:
-// 		writeStr("Unknown command: ");
-// 		writeStr(cmd);
-// 		writeStr("\r\n");
-// 		break;
-// 	}
-// }
-
-// const uint8_t txtMap[] = "0123456789ABCDEF";
-
-// void writeByte( uint8_t b )
-// {
-// 	writeChar(txtMap[b >> 4]);
-// 	writeChar(txtMap[b & 0x0F]);
-// }
-
-// void writeStr( uint8_t const * const str )
-// {
-// 	uint32_t ind = 0u;
-
-// 	while (str[ind]) {
-// 		writeChar(str[ind]);
-// 		++ind;
-// 	}
-// }
 
 void alert_crash(uint32_t crash_id)
 {
@@ -552,34 +361,3 @@ void alert_crash(uint32_t crash_id)
 		delay(1000);
 	}
 }
-
-// void readMem(uint32_t const addr, uint32_t const len)
-// {
-// 	uint32_t it = 0u;
-// 	uint32_t addrx = 0u;
-// 	uint32_t lenx = 0u;
-
-// 	lenx = len;
-// 	if (lenx == 0u) {
-// 		lenx = 4u;
-// 	}
-
-// 	for (it = 0u; it < (lenx / 4u); ++it) {
-// 		addrx = addr + it*4u;
-// 		writeStr("Read [");
-// 		writeWordBe(addrx);
-// 		writeStr("]: ");
-// 		writeWordBe(*((uint32_t*)addrx));
-// 		writeStr("\r\n");
-// 	}
-// }
-
-// void writeMem(uint32_t const addr, uint32_t const data)
-// {
-// 	writeStr("Write [");
-// 	writeWordBe(addr);
-// 	writeStr("]: ");
-// 	writeWordBe(data);
-// 	*((uint32_t*) addr) = data;
-// 	writeStr("\r\n");
-// }

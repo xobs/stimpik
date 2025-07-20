@@ -17,7 +17,9 @@ add_executable(stimpik
 add_subdirectory(blackmagic)
 
 # Add pico_stdlib library which aggregates commonly used features
-target_link_libraries(stimpik pico_stdlib 
+target_link_libraries(
+    stimpik
+    pico_stdlib
     hardware_uart 
     hardware_pwm
     blackmagic
