@@ -58,8 +58,18 @@ int bmp_loader_launcher(const char *data, uint32_t length, uint32_t offset, int 
 
 	int halt_reason = target_halt_poll(cur_target, NULL);
 	if (halt_reason != 0) {
-		printf("Target halted!   Reason: %d\n", halt_reason);
+		printf("Target halted!   Reason: %d\r\n", halt_reason);
+		return -1;
 	}
+	printf("Target is now running\n");
+
+	// {
+	// 	platform_delay(500);
+	// 	void stimpik_regs_read(target_s * target, uint32_t regs[20 + 33]);
+	// 	uint32_t regs[20 + 33] = {0};
+	// 	stimpik_regs_read(cur_target, regs);
+	// 	printf("PC now at: 0x%08x  SP now at: 0x%08x\n", regs[15], regs[13]);
+	// }
 
 	return 0;
 }

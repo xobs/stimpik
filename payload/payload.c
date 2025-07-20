@@ -2,70 +2,79 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CMD_BITS  7
-#define DATA_BITS 32
+#define __IO volatile
+static const char DUMP_START_MAGIC[] = {0x10, 0xAD, 0xDA, 0x7A};
 
 static volatile uint32_t *IDCODE = (uint32_t *)0xe0042000;
 
-static volatile uint32_t *RCC_APB2ENR_F1 = (uint32_t *)0x40021018u;
-static volatile uint32_t *AFIO_MAPR_F1 = (uint32_t *)0x40010004u;
+static uint8_t iwdg_enabled;
+#define _IWDG_KR (*(uint16_t *)0x40003000)
+#if 0
 
-static volatile uint32_t *GPIOA_CRL_F1 = (uint32_t *)0x40010800u;
-static volatile uint32_t *GPIOA_CRH_F1 = (uint32_t *)0x40010804u;
-static volatile uint32_t *GPIOA_IDR_F1 = (uint32_t *)0x40010808u;
-static volatile uint32_t *GPIOA_BSRR_F1 = (uint32_t *)0x40010810u;
+#define _WDG_SW                \
+	(*(uint32_t *)0x1FFFF800 & \
+		1UL << 16) // Page 20: https://www.st.com/resource/en/programming_manual/pm0075-stm32f10xxx-flash-memory-microcontrollers-stmicroelectronics.pdf
 
-static volatile uint32_t *GPIOB_CRL_F1 = (uint32_t *)0x40010C00u;
-static volatile uint32_t *GPIOB_CRH_F1 = (uint32_t *)0x40010C04u;
-static volatile uint32_t *GPIOB_IDR_F1 = (uint32_t *)0x40010C08u;
-static volatile uint32_t *GPIOB_BSRR_F1 = (uint32_t *)0x40010C10u;
+#else
 
-#define DIO GPIOA, P13
-#define CLK GPIOA, P14
+#define _WDG_SW                \
+	(*(uint32_t *)0x1FFFC000 & \
+		1UL << 5) // Page 20: https://www.st.com/resource/en/programming_manual/pm0075-stm32f10xxx-flash-memory-microcontrollers-stmicroelectronics.pdf
 
-enum Bank {
-	GPIOA,
-	GPIOB,
-};
+#endif
 
-enum Pin {
-	P0 = 0,
-	P1 = 1,
-	P2 = 2,
-	P3 = 3,
-	P4 = 4,
-	P5 = 5,
-	P6 = 6,
-	P7 = 7,
-	P8 = 8,
-	P9 = 9,
-	P10 = 10,
-	P11 = 11,
-	P12 = 12,
-	P13 = 13,
-	P14 = 14,
-	P15 = 15,
-};
+// GPIO
+typedef struct __attribute__((packed)) {
+	__IO uint32_t MODER;
+	__IO uint32_t OTYPER;
+	__IO uint32_t OSPEEDR;
+	__IO uint32_t PUPDR;
+	__IO uint32_t IDR;
+	__IO uint32_t ODR;
+	__IO uint32_t BSRR;
+	__IO uint32_t LCKR;
+	__IO uint32_t AFRL;
+	__IO uint32_t AFRH;
+} GPIO;
 
-enum Dir {
-	INPUT,
-	OUTPUT,
-	OUTPUT_OD,
-};
+// USART
+typedef struct __attribute__((packed)) {
+	__IO uint32_t SR;
+	__IO uint32_t DR;
+	__IO uint32_t BRR;
+	__IO uint32_t CR1;
+	__IO uint32_t CR2;
+	__IO uint32_t CR3;
+	__IO uint32_t GTPR;
+} USART;
 
-static void (*gpio_out)(enum Bank bank, enum Pin pin, bool on);
-static bool (*gpio_get)(enum Bank bank, enum Pin pin);
-static void (*gpio_dir)(enum Bank bank, enum Pin pin, enum Dir dir);
+#define RCC_AHB1ENR        (*(volatile uint32_t *)0x40023830u)
+#define RCC_AHB1ENR_GPIOC  (1 << 2)
+#define RCC_APB1ENR        (*(volatile uint32_t *)0x40023840u)
+#define RCC_APB1ENR_USART4 (1 << 19)
 
-static uint32_t readl(const volatile void *addr)
-{
-	return *(volatile uint32_t *)addr;
-}
+#define SYSCFG_MEMRMP (*(volatile uint32_t *)0x40013800u)
+#define FLASH_OPTCR   (*(volatile uint32_t *)0x40023c14u)
+#define SCB_AIRCR   (*(volatile uint32_t *)0xE000ED0Cu)
+ 
+#define GPIOA ((GPIO *)0x40020000u)
+#define GPIOB ((GPIO *)0x40020400u)
+#define GPIOC ((GPIO *)0x40020800u)
 
-static void writel(volatile void *addr, uint32_t val)
-{
-	*(volatile uint32_t *)addr = val;
-}
+#define USART4 ((USART *)0x40004c00u)
+
+#define PIN_CONFIG_ALT_FUNCTION  2
+#define PIN_CONFIG_INPUT_PULL_UP 0x8
+
+// #define USARTDIV      0x00000341u // 9600 baud @ 8Mhz
+#define USARTDIV      0x00000682u // 9600 baud @ 16Mhz
+#define USART_CR1_MSK 0x00002008u // 8-bit, no parity, enable TX
+#define USART_SR_TXE  (1 << 7)
+
+#define FP_CTRL  (*(volatile uint32_t *)0xe0002000u)
+#define FP_REMAP (*(volatile uint32_t *)0xe0002004u)
+#define FP_COMP0 (*(volatile uint32_t *)0xe0002008u)
+#define FP_COMP1 (*(volatile uint32_t *)0xe000200cu)
 
 static void delay(uint32_t count)
 {
@@ -74,271 +83,161 @@ static void delay(uint32_t count)
 	}
 }
 
-static void gpio_out_f1(enum Bank bank, enum Pin pin, bool on)
+static void init_usart4(bool stage_2)
 {
-	if (on) {
-		pin += 0;
-	} else {
-		pin += 16;
-	}
+	(void)stage_2;
+	/* Enable Clocks */
+	RCC_AHB1ENR |= RCC_AHB1ENR_GPIOC;
+	RCC_APB1ENR |= RCC_APB1ENR_USART4;
 
-	switch (bank) {
-	case GPIOA:
-		writel(GPIOA_BSRR_F1, 1 << pin);
-		break;
-	case GPIOB:
-		writel(GPIOB_BSRR_F1, 1 << pin);
-		break;
-	}
+	/* Configure Pins */
+
+	// Set PC10 (TX) to alternate function 8 push-pull
+	GPIOC->MODER &= ~(0x3 << 20);
+	GPIOC->MODER |= (PIN_CONFIG_ALT_FUNCTION << 20);
+	GPIOC->AFRH &= ~(0xF << 8);
+	GPIOC->AFRH |= (8 << 8);
+
+	/* Configure and enable USART1 */
+	USART4->BRR = USARTDIV;
+	USART4->CR1 = USART_CR1_MSK;
 }
 
-static bool gpio_get_f1(enum Bank bank, enum Pin pin)
+void refresh_iwdg(void)
 {
-	switch (bank) {
-	case GPIOA:
-		return !!(readl(GPIOA_IDR_F1) & (1 << pin));
-		break;
-	case GPIOB:
-		return !!(readl(GPIOB_IDR_F1) & (1 << pin));
-		break;
-	}
-	return 0;
-}
-
-static void gpio_dir_f1(enum Bank bank, enum Pin pin, enum Dir dir)
-{
-	volatile uint32_t *reg = NULL;
-	switch (bank) {
-	case GPIOA:
-		if (pin < 8) {
-			reg = GPIOA_CRL_F1;
-		} else {
-			reg = GPIOA_CRH_F1;
-			pin -= 8;
-		}
-		break;
-	case GPIOB:
-		if (pin < 8) {
-			reg = GPIOB_CRL_F1;
-		} else {
-			reg = GPIOB_CRH_F1;
-			pin -= 8;
-		}
-		break;
-	}
-
-	uint32_t dir_value = 4;
-	if (dir == INPUT) {
-		dir_value = 4;
-	} else if (dir == OUTPUT) {
-		dir_value = 3;
-	} else if (dir == OUTPUT_OD) {
-		dir_value = 7;
-	}
-	writel(reg, (readl(reg) & ~(0xF << (pin * 4))) | (dir_value << (pin * 4)));
-}
-
-static void gpio_init(bool repurpose_swd)
-{
-	switch (readl(IDCODE) & 0xFFF) {
-	case 0x410:
-	default:
-		// Ungate GPIOA and GPIOB, as well as AFIO
-		writel(RCC_APB2ENR_F1, (1 << 2) | (1 << 3) | (1 << 0));
-
-		gpio_out = gpio_out_f1;
-		gpio_get = gpio_get_f1;
-		gpio_dir = gpio_dir_f1;
-
-		if (repurpose_swd) {
-			// Disable the debug port, since we'll use it for GPIO access. Without
-			// this, the pins will stay mapped as SWD.
-			writel(AFIO_MAPR_F1, (4 << 24));
-
-			// Set SWDIO (PA13) and SWCLK (PA14) to push-pull GPIO mode
-			gpio_dir(DIO, INPUT);
-			gpio_dir(CLK, INPUT);
-		}
-
-		// Configure LEDs on PA0 and PA3 as outputs
-		gpio_dir(GPIOA, P0, OUTPUT);
-		gpio_dir(GPIOA, P3, OUTPUT);
-
-		// Configure PB7 as GPIO output
-		gpio_dir(GPIOB, P7, OUTPUT);
-
-		// Configure PB15 as GPIO output
-		gpio_dir(GPIOB, P15, OUTPUT);
-
-		break;
+	if (iwdg_enabled) {
+		_IWDG_KR = 0xAAAA;
 	}
 }
 
-static void led1(bool on)
+static const uint8_t txtMap[] = "0123456789ABCDEF";
+
+// Writes character to USART
+static void writeChar(uint8_t const chr)
 {
-	gpio_out(GPIOA, P3, !on);
+	while (!(USART4->SR & USART_SR_TXE)) {
+		refresh_iwdg(); // A byte takes ~1ms to be send at 9600, so there's plenty of time to reset the IWDG
+						/* wait */
+	}
+
+	USART4->DR = chr;
 }
 
-static void led2(bool on)
+// Writes byte to USART
+static void writeByte(uint8_t b)
 {
-	gpio_out(GPIOA, P0, !on);
+	writeChar(txtMap[b >> 4]);
+	writeChar(txtMap[b & 0x0F]);
 }
 
-static void led3(bool on)
+// Writes word to USART
+static void writeWord(uint32_t const word)
 {
-	gpio_out(GPIOB, P15, !on);
+	writeChar((word & 0x000000FF));
+	writeChar((word & 0x0000FF00) >> 8);
+	writeChar((word & 0x00FF0000) >> 16);
+	writeChar((word & 0xFF000000) >> 24);
 }
 
-static void led4(bool on)
+static void writeWordLe(uint32_t const word)
 {
-	gpio_out(GPIOB, P7, !on);
+	writeByte((word & 0xFF000000) >> 24);
+	writeByte((word & 0x00FF0000) >> 16);
+	writeByte((word & 0x0000FF00) >> 8);
+	writeByte((word & 0x000000FF));
+}
+
+// Writes string to USART
+static void writeStr(char const *const str)
+{
+	uint32_t ind = 0u;
+
+	while (str[ind]) {
+		writeChar(str[ind]);
+		++ind;
+	}
 }
 
 int main_stage1(void)
 {
-	int count = 0;
-	gpio_init(false);
+	FP_COMP1 = 0x08000005;
+	init_usart4(false);
+	writeStr("Hello from stage 1!");
+	writeStr("\r\nIDCODE: 0x");
+	writeWordLe(*IDCODE);
+	writeStr("\r\nFP_CTRL: 0x");
+	writeWordLe(FP_CTRL);
+	writeStr("\r\nFP_REMAP: 0x");
+	writeWordLe(FP_REMAP);
+	writeStr("\r\nFP_COMP0: 0x");
+	writeWordLe(FP_COMP0);
+	writeStr("\r\nSYSCFG_MEMRMP: 0x");
+	writeWordLe(SYSCFG_MEMRMP);
+	writeStr("\r\nFLASH_OPTCR: 0x");
+	writeWordLe(FLASH_OPTCR);
+	writeStr("\r\nAddress 0x20000000: 0x");
+	writeWordLe(*((uint32_t *)0x20000004));
+	writeStr("\r\nAddress 0x0: 0x");
+	writeWordLe(*((uint32_t *)0x4));
+	writeStr("\r\nWaiting for reset to occur...");
+
 	while (1) {
-		delay(20);
-		led2(!!(count & 8192));
-		led4(!!(count & 8192));
-		led3(count > 131072);
-		count += 1;
+		writeChar('.');
+		delay(500000);
 	}
 }
 
-enum TwiState {
-	TWI_STATE_IDLE,
-	TWI_STATE_START,
-	TWI_STATE_RW,
-	TWI_STATE_WRITE,
-	TWI_STATE_READ_TURNAROUND,
-	TWI_STATE_READ,
-};
-
-struct Twi {
-	uint32_t reg;
-	enum TwiState state;
-	uint8_t bit;
-	uint8_t cmd;
-	bool is_write;
-};
-
 int main_stage2(void)
 {
-	int count = 0;
-	struct Twi twi = {
-		.reg = 0,
-		.state = TWI_STATE_IDLE,
-		.bit = 0,
-		.cmd = 0,
-	};
-	gpio_init(true);
-	led1(false);
-	led2(false);
-	led3(false);
-	led4(true);
+	init_usart4(true);
+	writeStr("Hello from stage 2!");
+	iwdg_enabled = (_WDG_SW == 0); // Check WDG_SW bit.
+	refresh_iwdg();
+	writeStr("\r\nSYSCFG_MEMRMP: 0x");
+	writeWordLe(SYSCFG_MEMRMP);
+	writeStr("\r\n");
 
-	delay(60000);
+	// while (1) {
+	// 	writeChar('U');
+	// 	delay(500000);
+	// }
+	/* Print start magic to inform the attack board that
+	   we are going to dump */
+	for (uint32_t i = 0; i < sizeof(DUMP_START_MAGIC); i++) {
+		writeChar(DUMP_START_MAGIC[i]);
+	}
 
-	// Toggle swclk to let the other side know we're alive
-	bool last_swclk = gpio_get(CLK);
-	bool last_swdio = gpio_get(DIO);
+	uint32_t const *addr = (uint32_t *)0x08000000;
+	while (((uintptr_t)addr) <
+		(0x08000000U +
+			(1024UL *
+				1024UL))) // Try dumping up to 1M. When reaching unimplemented memory, it will cause hard fault and stop.
+	{
+		writeWord(*addr);
+		++addr;
+	}
 
-	uint8_t last_write_cmd = 0;
-	uint32_t cmd_counter = 0;
-
-	while (1) {
-		count += 1;
-		// led1(!!(count & 1024));
-		// led2(!!(count & 512));
-		// led3(!!(count & 1024));
-		// led4(!!(count & 4096));
-
-		bool clk = gpio_get(CLK);
-		bool dio = gpio_get(DIO);
-		bool falling_clk = !clk && last_swclk;
-		bool rising_clk = clk && !last_swclk;
-		bool falling_dio = !dio && last_swdio;
-		bool rising_dio = dio && !last_swdio;
-		last_swclk = clk;
-		last_swdio = dio;
-
-		// START condition -- the only time DIO falls when CLK is low
-		if (falling_dio && !clk && !falling_clk) {
-			cmd_counter += 1;
-			twi.state = TWI_STATE_START;
-			twi.bit = 0;
-			twi.cmd = 0;
-			led4(true);
-			continue;
-		}
-
-		if (rising_clk && (twi.state == TWI_STATE_IDLE)) {
-			gpio_dir(DIO, INPUT);
-		} else if (falling_clk && (twi.state == TWI_STATE_START)) {
-			led1(false);
-			led2(true);
-			led3(false);
-			led4(false);
-			if (dio) {
-				twi.cmd |= 1 << twi.bit;
-			}
-			twi.bit += 1;
-			if (twi.bit >= CMD_BITS) {
-				twi.state = TWI_STATE_RW;
-			}
-		} else if (falling_clk && (twi.state == TWI_STATE_RW)) {
-			led2(false);
-			twi.is_write = dio;
-			if (twi.is_write) {
-				last_write_cmd = twi.cmd;
-				twi.state = TWI_STATE_WRITE;
-				gpio_dir(DIO, INPUT);
-				twi.reg = 0;
-				led3(true);
-			} else {
-				twi.state = TWI_STATE_READ_TURNAROUND;
-				gpio_out(DIO, false);
-				// XXX HACK -- increment the register to show we're alive
-				twi.reg = last_write_cmd << 8 | twi.cmd | ((count & 0xff) << 16) | ((cmd_counter & 0xff) << 24);
-				led1(true);
-			}
-			twi.bit = 0;
-		} else if (falling_clk && (twi.state == TWI_STATE_WRITE)) {
-			twi.reg |= dio << twi.bit;
-			twi.bit += 1;
-			if (twi.bit >= DATA_BITS) {
-				// gpio_dir(DIO, INPUT);
-				twi.state = TWI_STATE_IDLE;
-			}
-		} else if (rising_clk && (twi.state == TWI_STATE_READ_TURNAROUND)) {
-			gpio_dir(DIO, OUTPUT);
-			twi.state = TWI_STATE_READ;
-		} else if (rising_clk && (twi.state == TWI_STATE_READ)) {
-			gpio_out(DIO, twi.reg & (1 << twi.bit));
-			twi.bit += 1;
-			if (twi.bit > DATA_BITS) {
-				twi.state = TWI_STATE_IDLE;
-			}
-		}
+	while (1) // End
+	{
+		refresh_iwdg(); // Keep refreshing IWDG to prevent reset
 	}
 }
 
 void alert_crash(uint32_t crash_id)
 {
+	init_usart4(true);
 	(void)crash_id;
-	// 	writeStr("!!! EXCEPTION !!!\r\nID: ");
-	// 	writeByte(crashId);
-	// 	writeStr("\r\nRestart required!\r\n\r\n");
-	// 	*((uint32_t *) 0xE000ED0C) = 0x05FA0004u;
-	static int error_count = 0;
-	led1(true);
-	led2(false);
+	writeStr("!!! EXCEPTION !!!\r\nID: ");
+	writeByte(crash_id);
+	writeStr("\r\nRestart required!\r\n\r\n");
+	// SCB_AIRCR = 0x05FA0004u;
+	// static int error_count = 0;
+	// led1(true);
+	// led2(false);
 	while (1) {
-		led3(!!(error_count & 2));
-		led4(!!(error_count & 4));
-		error_count += 1;
+		// led3(!!(error_count & 2));
+		// led4(!!(error_count & 4));
+		// error_count += 1;
 		delay(1000);
 	}
 }

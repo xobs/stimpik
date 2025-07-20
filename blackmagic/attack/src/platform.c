@@ -59,17 +59,24 @@ int32_t semihosting_request(void *const target, const uint32_t syscall, const ui
 	return -1;
 }
 
-void gdb_outf(const char *const fmt, ...)
-{
-	va_list args;
-	va_start(args, fmt);
-	vprintf(fmt, args);
-	va_end(args);
-}
-
 void gdb_out(const char *buf)
 {
-	printf("%s", buf);
+	while (*buf) {
+		if (*buf == '\n') {
+			putchar('\r');
+		}
+		putchar(*buf++);
+	}
+}
+
+void gdb_outf(const char *const fmt, ...)
+{
+	char buffer[2048];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, sizeof(buffer) - 1, fmt, args);
+	va_end(args);
+	gdb_out(buffer);
 }
 
 void stimpik_start_stub(target_s *target, uint32_t pc, uint32_t sp)
@@ -83,5 +90,12 @@ void stimpik_start_stub(target_s *target, uint32_t pc, uint32_t sp)
 	regs[CORTEX_REG_PSP] = sp;
 
 	target_regs_write(target, regs);
+	target_halt_resume(target, false);
+}
+
+void stimpik_regs_read(target_s *target, uint32_t regs[20 + 33])
+{
+	target_halt_request(target);
+	target_regs_read(target, regs);
 	target_halt_resume(target, false);
 }

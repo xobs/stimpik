@@ -26,9 +26,6 @@
  *
  */
 
-#define CMD_BITS  7
-#define DATA_BITS 32
-
 #include <hardware/uart.h>
 #include <hardware/pwm.h>
 #include <hardware/watchdog.h>
@@ -62,11 +59,12 @@ int bmp_loader(const char *data, uint32_t length, uint32_t offset, bool check_on
 
 #define LED_PIN PICO_DEFAULT_LED_PIN
 
-static void xmit_delay(void) {
+static void xmit_delay(void)
+{
 	sleep_us(50);
 }
 
-static void target_power(bool on)
+static void __time_critical_func(target_power)(bool on)
 {
 	if (on) {
 		gpio_set_mask(1 << POWER1_PIN | 1 << POWER2_PIN | 1 << POWER3_PIN);
@@ -77,7 +75,7 @@ static void target_power(bool on)
 
 static int handle_control(uint32_t timeout_ms)
 {
-	int c = getchar_timeout_us(timeout_ms * 1000);
+	int c = stdio_getchar_timeout_us(timeout_ms * 1000);
 	if ((c == PICO_ERROR_TIMEOUT) || (c == '\0')) {
 		return 0;
 	}
@@ -98,18 +96,13 @@ static int handle_control(uint32_t timeout_ms)
 		printf("Continuing explot\n");
 		break;
 
-	case 's':
-	case 'g':
-		break;
-
 	default:
-		printf("Unrecognized key '%c' (0x%02x)", c, c);
+		printf("Unrecognized key '%c' (0x%02x)\n", c, c);
+	case 'h':
 		printf("Usage:\n");
 		printf("    b    Reboot into bootloader mode\n");
 		printf("    r    Restart Pico\n");
 		printf("    c    Continue to stage 2\n");
-		printf("    s    Send command\n");
-		printf("    g    Get response\n");
 		printf("\n");
 		break;
 	}
@@ -126,108 +119,43 @@ static void validate_reset(void)
 	}
 }
 
-__attribute__((section(".data"))) static uint32_t powerdown_attack(void)
+static uint32_t __no_inline_not_in_flash_func(powerdown_attack)(void)
 {
+	bool boot0 = gpio_get(BOOT0_PIN);
+	gpio_put(BOOT0_PIN, false);
 	// Drop the power
-	gpio_put(LED_PIN, 1);
 	target_power(false);
 
 	// Wait for reset to go low
 	uint32_t count = 0;
-	while (gpio_get(RESET_PIN)) {
+	// while (gpio_get(RESET_PIN)) {
+	// This number was determined emperically. Originally we were
+	// attempting to sample the reset pin, but that ended up not working.
+	// The value here depends on the capacitance of your board.
+	while (count < 100000) {
 		count += 1;
-		// tight_loop_contents();
+		asm("nop");
 	}
 
 	// Immediately re-enable power
 	target_power(true);
+	gpio_put(BOOT0_PIN, boot0);
 	return count;
-}
-
-static void put_bit(bool bit)
-{
-	gpio_put(SWDIO_PIN, bit);
-	xmit_delay();
-	gpio_put(SWCLK_PIN, 0);
-	xmit_delay();
-	gpio_put(SWCLK_PIN, 1);
-	xmit_delay();
-}
-
-static bool get_bit(void)
-{
-	bool ret = false;
-	gpio_put(SWCLK_PIN, 0);
-	xmit_delay();
-	if (gpio_get(SWDIO_PIN)) {
-		ret = true;
-	}
-	gpio_put(SWCLK_PIN, 1);
-	xmit_delay();
-	return ret;
-}
-
-static void send_cmd(uint8_t cmd, uint32_t payload)
-{
-	int i;
-	// Drive DIO H->L when CLK is low
-	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
-	gpio_put(SWDIO_PIN, true);
-	gpio_put(SWCLK_PIN, false);
-	xmit_delay();
-	gpio_put(SWDIO_PIN, false);
-	xmit_delay();
-	gpio_put(SWCLK_PIN, true);
-	xmit_delay();
-
-	for (i = 0; i < CMD_BITS; i += 1) {
-		put_bit(!!(cmd & (1 << i)));
-	}
-	put_bit(true); // Host -> Device
-
-	for (i = 0; i < DATA_BITS; i += 1) {
-		put_bit(!!(payload & (1 << i)));
-	}
-}
-
-static uint32_t read_cmd(uint8_t cmd)
-{
-	int i;
-	uint32_t response = 0;
-
-	// Drive DIO H->L when CLK is low
-	gpio_set_dir(SWDIO_PIN, GPIO_OUT);
-	gpio_put(SWDIO_PIN, true);
-	gpio_put(SWCLK_PIN, false);
-	xmit_delay();
-	gpio_put(SWDIO_PIN, false);
-	xmit_delay();
-	gpio_put(SWCLK_PIN, true);
-	xmit_delay();
-
-	// 7 bits of command
-	for (i = 0; i < CMD_BITS; i += 1) {
-		put_bit(!!(cmd & (1 << i)));
-	}
-	put_bit(false); // Device -> Host
-	xmit_delay();
-	gpio_set_dir(SWDIO_PIN, GPIO_IN);
-	put_bit(false); // Turnaround bit
-
-	for (i = 0; i < DATA_BITS; i += 1) {
-		if (get_bit()) {
-			response |= 1 << i;
-		}
-	}
-
-	// Dummy clock for footer
-	put_bit(false);
-	return response;
 }
 
 int main(void)
 {
+	bool boot0_val;
+	bool reset_val;
 	stdio_init_all();
+	stdio_filter_driver(&stdio_usb);
+
+	// Init UART
+	uart_init(UART_ID, UART_BAUD);
+	gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+	gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+	uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
+	uart_set_fifo_enabled(UART_ID, true);
 
 	// Delay enough time for the serial port to re-attach
 	sleep_ms(1000);
@@ -246,8 +174,7 @@ int main(void)
 	gpio_set_dir(SWCLK_PIN, GPIO_OUT);
 	gpio_set_dir(RESET_PIN, GPIO_IN);
 	gpio_pull_up(RESET_PIN);
-	gpio_put(RESET_PIN, 0);
-	gpio_set_dir(BOOT0_PIN, GPIO_OUT);
+	gpio_put(RESET_PIN, false);
 
 	// Init PWM for indicator LED
 	gpio_set_function(LED_PIN, GPIO_FUNC_PWM);
@@ -261,7 +188,17 @@ int main(void)
 	// Set BOOT0 to high and enable power. This will execute from SRAM, but since
 	// there is no data there yet it will execute garbage and likely crash. Our
 	// software will recover it.
+	gpio_set_dir(BOOT0_PIN, GPIO_OUT);
 	gpio_put(BOOT0_PIN, true);
+
+	int countdown = 10;
+	while ((handle_control(1000) != 'c') && (countdown > 0)) {
+		if (!gpio_get(BOOT0_PIN)) {
+			printf("WARNING: BOOT0 pin appears to be tied to GND\n");
+		}
+		printf("Press 'c' to continue, or 'h' for help... (will start in %d seconds...)\n", countdown);
+		countdown -= 1;
+	}
 
 	// Enable power
 	// Ensure that the power pin set high before configuring it as output
@@ -273,22 +210,16 @@ int main(void)
 	gpio_set_dir(POWER3_PIN, GPIO_OUT);
 	sleep_ms(100);
 	target_power(true);
-
-	gpio_put(LED_PIN, 0);
+	sleep_ms(100);
 
 	// Validate that the target is no longer in reset.
 	validate_reset();
 
-	if (1) {
+	if (0) {
 		while (bmp_loader_launcher(payload, sizeof(payload), 0x20000000, 2) != 0) {
 			printf("Target not found... retrying\n");
 			handle_control(500);
 		}
-
-		gpio_set_dir(SWCLK_PIN, GPIO_OUT);
-		gpio_set_dir(SWDIO_PIN, GPIO_OUT);
-		gpio_put(SWCLK_PIN, true);
-		gpio_put(SWDIO_PIN, true);
 
 		printf("Booted directly into stage 2\n");
 	} else {
@@ -298,15 +229,12 @@ int main(void)
 			handle_control(500);
 		}
 
-		printf("Connected to target. Firmware is now loaded into SRAM. Device is in reset.\n");
-		sleep_ms(100);
-
 		// Set SWCLK and SWDIO pins to inputs to prevent them from powering the target.
 		gpio_set_dir(SWCLK_PIN, GPIO_IN);
 		gpio_set_dir(SWDIO_PIN, GPIO_IN);
 
-		// Set BOOT0 to high to ensure the SRAM payload is executed
-		gpio_put(BOOT0_PIN, true);
+		printf("Connected to target. Firmware is now loaded into SRAM. Device is in reset. Debug pins floating.\n");
+		sleep_ms(100);
 
 		// Deassert reset. This will boot into Stage 1 when power is reapplied.
 		gpio_set_dir(RESET_PIN, GPIO_IN);
@@ -318,52 +246,97 @@ int main(void)
 
 		sleep_ms(10);
 
-		// Set SWCLK and SWDIO to outputs and drive them high. This
-		// will be the basis of bidirectional communication.
-		gpio_set_dir(SWCLK_PIN, GPIO_OUT);
-		gpio_set_dir(SWDIO_PIN, GPIO_OUT);
-		gpio_put(SWCLK_PIN, true);
-		gpio_put(SWDIO_PIN, true);
-
-		printf("Press 'c' to continue into stage 2\n");
-		while (handle_control(500) != 'c') {
-		}
-		printf("Resetting target into stage 2\n");
+		// // Set SWCLK and SWDIO to outputs and drive them high. This
+		// // will be the basis of bidirectional communication.
+		// gpio_set_dir(SWCLK_PIN, GPIO_OUT);
+		// gpio_set_dir(SWDIO_PIN, GPIO_OUT);
+		// gpio_put(SWCLK_PIN, true);
+		// gpio_put(SWDIO_PIN, true);
 
 		// Reset the board again with BOOT0 held low. This will cause it
 		// to boot into stage 2.
-		gpio_put(BOOT0_PIN, 0);
+		gpio_put(BOOT0_PIN, false);
+		sleep_ms(1);
+
+		// printf("Stage 1 should be running. Press 'c' to continue into stage 2\n");
+		// putchar('>');
+		// putchar(' ');
+		// while (handle_control(1) != 'c') {
+		// 	if (uart_is_readable_within_us(UART_ID, 1000)) {
+		// 		char c = uart_getc(UART_ID);
+		// 		putchar(c);
+		// 		if (c == '\n') {
+		// 			putchar('>');
+		// 			putchar(' ');
+		// 		}
+		// 	}
+		// }
+		// printf("\nResetting target into stage 2...\n");
+
+		// Set BOOT0 to high to ensure the SRAM payload is executed
+		boot0_val = gpio_get(BOOT0_PIN);
+		if (boot0_val) {
+			printf("WARNING: BOOT0 is still HIGH!\n");
+		}
+
 		gpio_set_dir(RESET_PIN, GPIO_OUT);
-		sleep_ms(10);
+		sleep_ms(15);
+		boot0_val = gpio_get(BOOT0_PIN);
+		reset_val = gpio_get(RESET_PIN);
+		gpio_put(RESET_PIN, true);
 		gpio_set_dir(RESET_PIN, GPIO_IN);
+		gpio_put(RESET_PIN, false);
+
+		// Verify that the pins did, in fact, go low.
+		if (reset_val) {
+			printf("WARNING: Reset signal did not go LOW during reset\n");
+		}
+		if (boot0_val) {
+			printf("WARNING: BOOT0 pin was stuck high\n");
+		}
 	}
 
-	printf("Reading data from target...\n");
+	printf("Waiting for magic data from target...\n");
+
+	// Wait for dump start magic to ensure
+	// that we don't forward any garbage data
+	// caused by the reset
+	uint magic_index = 0;
+	while (true) {
+		if (!uart_is_readable_within_us(UART_ID, 1000)) {
+			handle_control(1);
+			continue;
+		}
+		char c = uart_getc(UART_ID);
+		if (c == DUMP_START_MAGIC[magic_index]) {
+			if (++magic_index == sizeof(DUMP_START_MAGIC)) {
+				break;
+			}
+		} else {
+			putchar(c);
+			magic_index = 0;
+		}
+	}
+
+	// Prevent interpreting 0x0A as newline (0x0D 0x0A) instead of binary data
+	// This will spare you a headache when dealing with putchar()
+	stdio_set_translate_crlf(&stdio_usb, false);
+
+	printf("Reading data from target...\r\n");
+	printf("-------------------------\r\n");
 
 	// Forward dumped data from UART to USB serial
-	int last_swclk = 0;
-	int last_swdio = 0;
+	uint stalls = 0;
 	while (true) {
-		uint8_t c = handle_control(1);
-
-		if (c == 's') {
-			static uint32_t index = 0;
-			uint32_t value = 0xf00f000f;
-			send_cmd(index, index ? value : 0);
-			printf("Sent 0x%08x to 0x%02x\n", value, index);
-			index += 1;
-			if (index > 128) {
-				index = 0;
-			}
-		}
-		if (c == 'g') {
-			static uint32_t index = 3;
-			uint32_t response = read_cmd(index);
-			printf("Response from 0x%02x: 0x%08x\n", index, response);
-			index += 1;
-			if (index > 128) {
-				index = 0;
-			}
+		if (uart_is_readable(UART_ID)) {
+			char c = uart_getc(UART_ID);
+			putchar(c);
+			pwm_set_gpio_level(LED_PIN, c); // LED will change intensity based on UART data
+			stalls = 0;
+		} else {
+			// If no data is received for a while, turn off the LED
+			if (++stalls == UART_STALLS_FOR_LED_OFF)
+				pwm_set_gpio_level(LED_PIN, 0);
 		}
 	}
 }

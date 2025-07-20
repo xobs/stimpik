@@ -20,30 +20,30 @@
 .thumb
 isr_vectors:
 	/* The STM32F4 will consult this address to determine the stack pointer address. */
-	.word 0x20005000
+	.word 0x20002000 // 0x00
 	/* The STM32F4 will consult this address to determine the entrypoint */
 #ifdef SKIP_STAGE1
-	.word _start_stage2+1
+	.word _start_stage2+1 // 0x04
 #else
-	.word _start_stage1+1
+	.word _start_stage1+1 // 0x04
 #endif
 	/* The next six words serve double-duty: They act as a normal vector table,
 	 * and they pad it out so that the word pointing to _start_stage2 is at offset
 	 * 0x20 from the start.
 	 */
-	.word Handle_NMI+1
-	.word Handle_HardFault+1
-	.word Handle_MemoryManage+1
-	.word 0
-	.word 0
-	.word 0
+	.word Handle_NMI+1 // 0x08
+	.word Handle_HardFault+1 // 0x0c
+	.word Handle_MemoryManage+1 // 0x10
+	.word 0 // 0x14
+	.word 0 // 0x18
+	.word 0 // 0x1c
 /* These is the stage 2 entry point. It must be at offset 0x20, to ensure
  * it ends up at 0x20000020 so the FPB can refer to it. At startup, the CPU
  * will load this value into the program counter instead of the address at
  * 0x00000004. Ensure the LSB is set as it is Thumb2 code.
  */
 stage2_pointer:
-	.word _start_stage2+1
+	.word _start_stage2+1 // 0x20
 
 /* For STM32F1, a hardcoded entrypoint is used. This entrypoint may be any one of the following:
  *	- 0x20000108
@@ -80,6 +80,11 @@ _start_stage1: /* stage 1 */
 	/* Write all three values into the FPB address space */
 	stm r0!, {r1, r2, r3}
 
+	/* Set stack pointer by reading it out of the vector table */
+	ldr r0, =isr_vectors
+	ldr r0, [r0]
+	mov sp, r0
+	
 	/* Clear BSS */
 	movs r0, #0
 	ldr  r1, =_bss_start
@@ -98,23 +103,25 @@ bss_loop1:
 
 _start:
 _start_stage2:
-	/* Disable the FPB to make debugging easier */
-	ldr r0, =0xe0002000
-	movs r1, #2
-	str r1, [r0]
-
 	/* Set stack pointer by reading it out of the vector table */
 	ldr r0, =isr_vectors
 	ldr r0, [r0]
 	mov sp, r0
-
-	/* Enable interrupts */
-	cpsie if
+	
+#if 0
+	/* Disable the FPB to make debugging easier */
+	ldr r0, =0xe0002000
+	movs r1, #2
+	str r1, [r0]
 	
 	/* Configure VTOR */
 	ldr r0, =0xE000ED08
 	ldr r1, =isr_vectors
 	str r1, [r0]
+
+	/* Enable interrupts */
+	cpsie if
+#endif
 
 	/* Clear BSS */
 	movs r0, #0
